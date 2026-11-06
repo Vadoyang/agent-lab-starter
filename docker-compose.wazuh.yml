@@ -1,0 +1,278 @@
+# AI Agent 治理藍隊實驗環境 — Wazuh 版（第 1–4 塊：平台 + 偵測 + 戰情室）
+#
+#   - 以 Wazuh 4.14.10（manager / indexer / dashboard）取代 ELK。
+#   - 治理元件把事件寫到本機 logs/*.ndjson；Wazuh manager 讀這些檔、用 local_rules.xml 偵測，
+#     告警進 indexer（wazuh-alerts-*），可再接既有 Wazuh → Shuffle 流程。
+#   - weblogs 資料庫放在 Wazuh indexer（OpenSearch）；seed 載入、Agent 的 search_logs 查它。
+#   - Grafana 讀 indexer 當戰情室大螢幕。
+#
+# 啟動：在 .env 末端加一行  COMPOSE_FILE=docker-compose.wazuh.yml  然後 ./lab.sh up
+# 主機需先：sudo sysctl -w vm.max_map_count=262144
+#
+# 網路隔離（✔連得到 ✘連不到）：
+#   svc_net   ：內部服務（indexer/manager/dashboard/postgres/victim/grafana…）。不能上網。
+#   agent_net ：受治理 Agent 專用。不能上網，只連得到 toolproxy 與 llm-proxy。
+#   egress_net：可對外（連 DGX 上的模型）。
+#   ui_net    ：dashboard 與 grafana 對外開網頁埠。
+
+name: agentlab-wz
+
+services:
+  # ==================== Wazuh 平台（取自官方 wazuh-docker v4.14.10；demo 帳密須於正式前更換） ====================
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:4.14.10
+    hostname: wazuh.indexer
+    restart: unless-stopped
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+      nofile: {soft: 65536, hard: 65536}
+    volumes:
+      - wazuh-indexer-data:/var/lib/wazuh-indexer
+      - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-indexer/config/certs/root-ca.pem
+      - ./config/wazuh_indexer_ssl_certs/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/config/certs/wazuh.indexer.key
+      - ./config/wazuh_indexer_ssl_certs/wazuh.indexer.pem:/usr/share/wazuh-indexer/config/certs/wazuh.indexer.pem
+      - ./config/wazuh_indexer_ssl_certs/admin.pem:/usr/share/wazuh-indexer/config/certs/admin.pem
+      - ./config/wazuh_indexer_ssl_certs/admin-key.pem:/usr/share/wazuh-indexer/config/certs/admin-key.pem
+      - ./config/wazuh_indexer/wazuh.indexer.yml:/usr/share/wazuh-indexer/config/opensearch.yml
+      - ./config/wazuh_indexer/internal_users.yml:/usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml
+    networks: [svc_net]
+
+  wazuh.manager:
+    image: wazuh/wazuh-manager:4.14.10
+    hostname: wazuh.manager
+    restart: unless-stopped
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+      nofile: {soft: 655360, hard: 655360}
+    environment:
+      - INDEXER_URL=https://wazuh.indexer:9200
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=SecretPassword
+      - FILEBEAT_SSL_VERIFICATION_MODE=full
+      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
+      - SSL_CERTIFICATE=/etc/ssl/filebeat.pem
+      - SSL_KEY=/etc/ssl/filebeat.key
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=MyS3cr37P450r.*-
+    volumes:
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+      - ./config/wazuh_indexer_ssl_certs/root-ca-manager.pem:/etc/ssl/root-ca.pem
+      - ./config/wazuh_indexer_ssl_certs/wazuh.manager.pem:/etc/ssl/filebeat.pem
+      - ./config/wazuh_indexer_ssl_certs/wazuh.manager-key.pem:/etc/ssl/filebeat.key
+      - ./config/wazuh_cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf
+      # agentlab（第 2、3 塊）：讀治理事件檔 + 載入自訂偵測規則
+      - ./logs:/var/log/agentlab:ro
+      - ./config/wazuh_cluster/local_rules.xml:/var/ossec/etc/rules/local_rules.xml
+    networks: [svc_net]
+    depends_on: [wazuh.indexer]
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:4.14.10
+    hostname: wazuh.dashboard
+    restart: unless-stopped
+    environment:
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=SecretPassword
+      - WAZUH_API_URL=https://wazuh.manager
+      - DASHBOARD_USERNAME=kibanaserver
+      - DASHBOARD_PASSWORD=kibanaserver
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=MyS3cr37P450r.*-
+    ports:
+      - "${WAZUH_DASHBOARD_PORT:-8443}:5601"
+    volumes:
+      - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem
+      - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem
+      - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem
+      - ./config/wazuh_dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml
+      - ./config/wazuh_dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml
+      - wazuh-dashboard-config:/usr/share/wazuh-dashboard/data/wazuh/config
+      - wazuh-dashboard-custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
+    networks: [svc_net, ui_net]
+    depends_on: [wazuh.indexer]
+
+  # ==================== 戰情室（第 4 塊） ====================
+  grafana:
+    image: grafana/grafana-oss:12.4.3
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-agentlab}
+      GF_INSTALL_PLUGINS: grafana-opensearch-datasource   # 需能連 grafana.com 下載外掛
+      # 供 provisioning/datasources/opensearch.yml 代入
+      INDEXER_USER: admin
+      INDEXER_PASS: SecretPassword
+      INDEXER_OS_VERSION: ${INDEXER_OS_VERSION:-2.19.1}
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    networks: [svc_net, ui_net]
+    depends_on: [wazuh.indexer]
+
+  # ==================== 既有實驗服務 ====================
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: corp
+      POSTGRES_USER: app_admin
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD}
+      DB_RO_PASSWORD: ${DB_RO_PASSWORD}
+    volumes:
+      - ./db:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    networks: [svc_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_admin -d corp"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  seed:   # 一次性：把假 web log 載入 Wazuh indexer（Agent 的 search_logs 會查它）
+    build: ./app
+    command: python seed.py
+    environment:
+      INDEXER_URL: https://wazuh.indexer:9200
+      INDEXER_USER: admin
+      INDEXER_PASS: SecretPassword
+      INDEXER_VERIFY: "false"
+    volumes:
+      - ./data:/data:ro
+    networks: [svc_net]
+    depends_on: [wazuh.indexer]
+    restart: "no"
+
+  victim:
+    build: ./app
+    command: python sink.py
+    environment: {SINK_ROLE: victim, ES_URL: ""}
+    volumes: [./logs:/logs]
+    networks: [svc_net]
+    restart: unless-stopped
+
+  attacker-site:
+    build: ./app
+    command: python sink.py
+    environment: {SINK_ROLE: attacker, ES_URL: ""}
+    volumes: [./logs:/logs]
+    networks: [svc_net]
+    restart: unless-stopped
+
+  threatintel:
+    build: ./app
+    command: python sink.py
+    environment: {SINK_ROLE: threatintel, ES_URL: ""}
+    volumes: [./logs:/logs]
+    networks: [svc_net]
+    restart: unless-stopped
+
+  toolproxy:       # 治理閘道（PEP）：驗憑證、查政策、代為執行、全程紀錄（寫本機檔，Wazuh 再讀）
+    build: ./app
+    command: uvicorn toolproxy:app --host 0.0.0.0 --port 8000
+    environment:
+      AGENT_TOKEN_SOC01: ${AGENT_TOKEN_SOC01}
+      DB_RO_DSN: "host=postgres dbname=corp user=agent_ro password=${DB_RO_PASSWORD}"
+      ES_URL: ""
+      INDEXER_URL: https://wazuh.indexer:9200
+      INDEXER_USER: admin
+      INDEXER_PASS: SecretPassword
+      INDEXER_VERIFY: "false"
+      WIKI_DIR: /wiki
+    volumes:
+      - ./wiki:/wiki:ro
+      - ./logs:/logs
+    networks: [agent_net, svc_net]
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: unless-stopped
+
+  llm-proxy:       # 模型代理：受治理 Agent 只能經由這裡連到模型
+    image: nginx:1.27-alpine
+    environment:
+      LLM_UPSTREAM: ${LLM_UPSTREAM}
+    volumes:
+      - ./nginx/llm-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks: [agent_net, egress_net]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    restart: unless-stopped
+
+  # ---------- Agent（用 docker compose run 執行，不常駐） ----------
+  agent-baseline:  # 對照組：未治理（直接連 indexer 查 weblogs、連服務）
+    build: ./app
+    profiles: [agent]
+    environment:
+      MODE: baseline
+      LLM_BASE_URL: ${LLM_UPSTREAM}/v1
+      LLM_API_KEY: ${LLM_API_KEY}
+      MODEL: ${MODEL}
+      DB_ADMIN_DSN: "host=postgres dbname=corp user=app_admin password=${DB_ADMIN_PASSWORD}"
+      DB_ADMIN_PASSWORD: ${DB_ADMIN_PASSWORD}
+      SYSTEM_FLAG: ${SYSTEM_FLAG}
+      ES_URL: ""
+      INDEXER_URL: https://wazuh.indexer:9200
+      INDEXER_USER: admin
+      INDEXER_PASS: SecretPassword
+      INDEXER_VERIFY: "false"
+      WIKI_DIR: /wiki
+    volumes:
+      - ./wiki:/wiki:ro
+      - ./logs:/logs
+      - ./results:/results
+    networks: [svc_net, egress_net]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  agent-governed:  # 實驗組：受治理（沒有任何秘密，只有一張憑證；查詢一律經 toolproxy）
+    build: ./app
+    profiles: [agent]
+    environment:
+      MODE: governed
+      LLM_BASE_URL: http://llm-proxy:8080/v1
+      LLM_API_KEY: ${LLM_API_KEY}
+      MODEL: ${MODEL}
+      TOOLPROXY_URL: http://toolproxy:8000
+      AGENT_TOKEN: ${AGENT_TOKEN_SOC01}
+    volumes:
+      - ./logs:/logs
+      - ./results:/results
+    networks: [agent_net]
+    depends_on: [toolproxy, llm-proxy]
+
+networks:
+  svc_net: {internal: true}
+  agent_net: {internal: true}
+  egress_net: {}
+  ui_net: {}
+
+volumes:
+  pgdata:
+  grafana-data:
+  wazuh-indexer-data:
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_agentless:
+  wazuh_wodles:
+  filebeat_etc:
+  filebeat_var:
+  wazuh-dashboard-config:
+  wazuh-dashboard-custom:

@@ -1,0 +1,15 @@
+# LLM Proxy：受治理的 Agent 沒有對外網路，只能經由這裡連到模型服務（Ollama／vLLM）。
+# ${LLM_UPSTREAM} 由 .env 帶入（nginx 官方映像會在啟動時自動替換）。
+server {
+    listen 8080;
+    client_max_body_size 20m;
+
+    location / {
+        proxy_pass ${LLM_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+}

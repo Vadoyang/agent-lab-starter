@@ -1,0 +1,24 @@
+# Grafana 自動佈建：把 Wazuh indexer 接成資料來源。
+# 需要 grafana-opensearch-datasource 外掛（compose 以 GF_INSTALL_PLUGINS 安裝；首次啟動需能連 grafana.com）。
+#
+# 版本說明：Wazuh indexer 的設定開了 compatibility.override_main_response_version，
+# 對外回報為 Elasticsearch 7.10.2，因此這裡用 flavor=Elasticsearch、version=7.10.0 最穩定可用。
+apiVersion: 1
+
+datasources:
+  - name: Wazuh-Indexer
+    uid: agentlab-wazuh-indexer
+    type: grafana-opensearch-datasource
+    access: proxy
+    url: https://wazuh.indexer:9200
+    basicAuth: true
+    basicAuthUser: ${INDEXER_USER}
+    jsonData:
+      flavor: Elasticsearch
+      version: "7.10.0"
+      database: "wazuh-alerts-*"      # 偵測結果索引
+      timeField: "timestamp"
+      tlsSkipVerify: true             # 自簽憑證；實驗環境略過驗證
+    secureJsonData:
+      basicAuthPassword: ${INDEXER_PASS}
+    editable: true

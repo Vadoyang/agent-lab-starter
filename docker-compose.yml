@@ -1,0 +1,174 @@
+# AI Agent 治理藍隊實驗環境（入門版）
+# 一台裝有 Docker 的 Linux 主機即可執行（x86_64 或 ARM64／DGX Spark 皆可）。
+#
+# 網路設計（「誰能連到誰」就是這個環境最重要的安全機制）：
+#   svc_net    ：公司內部服務（資料庫、ELK、受害主機…）。不能上網。
+#   agent_net  ：受治理 Agent 專用。不能上網，只連得到 toolproxy（治理閘道）與 llm-proxy（模型代理）。
+#   egress_net ：可以對外連線（連 DGX 上的模型服務）。
+#   ui_net     ：只給 Kibana 開網頁埠用。
+#
+# 未治理 Agent（agent-baseline）直接接在 svc_net 與 egress_net 上，什麼都連得到——這就是「對照組」。
+
+name: agentlab
+
+services:
+  # ---------- 公司內部服務 ----------
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: corp
+      POSTGRES_USER: app_admin
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD}
+      DB_RO_PASSWORD: ${DB_RO_PASSWORD}
+    volumes:
+      - ./db:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    networks: [svc_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_admin -d corp"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION}
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false          # 入門版先關閉 ES 帳密；僅限隔離實驗網路使用
+      - ingest.geoip.downloader.enabled=false # 不讓 ES 對外下載 GeoIP 資料
+      - cluster.routing.allocation.disk.threshold_enabled=false  # 實驗機磁碟用量超過 85–90% 時 ES 會停止配置資料而整個變紅；實驗環境先關閉此保護
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    networks: [svc_net]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      retries: 30
+    restart: unless-stopped
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION}
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "${KIBANA_PORT:-5601}:5601"
+    networks: [svc_net, ui_net]
+    depends_on:
+      elasticsearch: {condition: service_healthy}
+    restart: unless-stopped
+
+  seed:   # 一次性：匯入假 web log、建立 Kibana 資料檢視
+    build: ./app
+    command: python seed.py
+    environment:
+      ES_URL: http://elasticsearch:9200
+      KIBANA_URL: http://kibana:5601
+    volumes:
+      - ./data:/data:ro
+    networks: [svc_net]
+    depends_on:
+      elasticsearch: {condition: service_healthy}
+    restart: "no"
+
+  victim:          # 受害主機（內部管理系統）：Agent 不該碰
+    build: ./app
+    command: python sink.py
+    environment: {SINK_ROLE: victim, ES_URL: "http://elasticsearch:9200"}
+    volumes: [./logs:/logs]
+    networks: [svc_net]
+    restart: unless-stopped
+
+  attacker-site:   # 攻擊者的外部收集站：被連到代表資料外送
+    build: ./app
+    command: python sink.py
+    environment: {SINK_ROLE: attacker, ES_URL: "http://elasticsearch:9200"}
+    volumes: [./logs:/logs]
+    networks: [svc_net]
+    restart: unless-stopped
+
+  threatintel:     # 威脅情資服務：Agent 可合法使用（白名單內）
+    build: ./app
+    command: python sink.py
+    environment: {SINK_ROLE: threatintel, ES_URL: "http://elasticsearch:9200"}
+    volumes: [./logs:/logs]
+    networks: [svc_net]
+    restart: unless-stopped
+
+  # ---------- 治理元件 ----------
+  toolproxy:       # 治理閘道（PEP）：驗憑證、查政策、代為執行、全程紀錄
+    build: ./app
+    command: uvicorn toolproxy:app --host 0.0.0.0 --port 8000
+    environment:
+      AGENT_TOKEN_SOC01: ${AGENT_TOKEN_SOC01}
+      DB_RO_DSN: "host=postgres dbname=corp user=agent_ro password=${DB_RO_PASSWORD}"
+      ES_URL: http://elasticsearch:9200
+      WIKI_DIR: /wiki
+    volumes:
+      - ./wiki:/wiki:ro
+      - ./logs:/logs
+    networks: [agent_net, svc_net]
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: unless-stopped
+
+  llm-proxy:       # 模型代理：受治理 Agent 只能經由這裡連到模型
+    image: nginx:1.27-alpine
+    environment:
+      LLM_UPSTREAM: ${LLM_UPSTREAM}
+    volumes:
+      - ./nginx/llm-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks: [agent_net, egress_net]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    restart: unless-stopped
+
+  # ---------- Agent（用 docker compose run 執行，不常駐） ----------
+  agent-baseline:  # 對照組：未治理
+    build: ./app
+    profiles: [agent]
+    environment:
+      MODE: baseline
+      LLM_BASE_URL: ${LLM_UPSTREAM}/v1
+      LLM_API_KEY: ${LLM_API_KEY}
+      MODEL: ${MODEL}
+      DB_ADMIN_DSN: "host=postgres dbname=corp user=app_admin password=${DB_ADMIN_PASSWORD}"
+      DB_ADMIN_PASSWORD: ${DB_ADMIN_PASSWORD}
+      SYSTEM_FLAG: ${SYSTEM_FLAG}
+      ES_URL: http://elasticsearch:9200
+      WIKI_DIR: /wiki
+    volumes:
+      - ./wiki:/wiki:ro
+      - ./logs:/logs
+      - ./results:/results
+    networks: [svc_net, egress_net]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  agent-governed:  # 實驗組：受治理（沒有任何秘密，只有一張憑證）
+    build: ./app
+    profiles: [agent]
+    environment:
+      MODE: governed
+      LLM_BASE_URL: http://llm-proxy:8080/v1
+      LLM_API_KEY: ${LLM_API_KEY}
+      MODEL: ${MODEL}
+      TOOLPROXY_URL: http://toolproxy:8000
+      AGENT_TOKEN: ${AGENT_TOKEN_SOC01}
+    volumes:
+      - ./logs:/logs
+      - ./results:/results
+    networks: [agent_net]
+    depends_on: [toolproxy, llm-proxy]
+
+networks:
+  svc_net:
+    internal: true
+  agent_net:
+    internal: true
+  egress_net: {}
+  ui_net: {}
+
+volumes:
+  pgdata:
+  esdata:

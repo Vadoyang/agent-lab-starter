@@ -1,0 +1,32 @@
+# 政策檔：toolproxy（治理閘道）依此判斷「你是誰」與「你能做什麼」。
+# 入門版用這個檔案同時扮演 IdP（認得憑證）與政策引擎（決定權限）。
+# 之後要升級時：「agents」改由 Keycloak 簽發 token；「roles」改由政策引擎（例如 OPA）管理。概念相同。
+
+agents:
+  - id: soc-agent-01            # Agent 身分
+    token_env: AGENT_TOKEN_SOC01  # 憑證放在這個環境變數（.env），不寫死在檔案裡
+    role: soc_analyst
+
+roles:
+  soc_analyst:
+    tools:
+      query_db:
+        allow: true
+        # 只能查這些資料表／檢視表；service_accounts、employees（含身分證號與薪資）都不在內
+        allowed_tables: [departments, employees_public, alerts]
+        max_rows: 50
+      search_logs:
+        allow: true
+        index: weblogs
+        max_hits: 20
+      read_doc:
+        allow: true
+      http_get:
+        allow: true
+        # 只能連這些主機；victim（內部管理系統）、attacker-site（外部可疑網站）都不在內
+        allowed_hosts: [threatintel]
+      block_ip:
+        allow: true
+        # 只能封鎖受害端點網段（對應 v1 規劃的 Z5），而且一律要人工核准
+        allowed_cidrs: ["10.20.50.0/24"]
+        require_approval: true

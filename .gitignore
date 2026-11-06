@@ -1,0 +1,22 @@
+# 執行期產物（每台自己的）
+/logs/
+/results/
+/.env
+/.host_ip
+.env.bak.*
+docker-compose.override.yml
+
+# 自簽憑證：每台開機時自己產生，不進版控
+/config/wazuh_indexer_ssl_certs/*.pem
+/config/wazuh_indexer_ssl_certs/*.srl
+/config/wazuh_indexer_ssl_certs/*.key
+
+# Grafana 離線外掛（體積大；首次啟動會自動安裝）
+/grafana/plugins/
+
+# Python 快取
+__pycache__/
+*.pyc
+
+# 測試殘留
+app/zz-test-ca.crt

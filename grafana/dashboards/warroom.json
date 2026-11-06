@@ -1,0 +1,86 @@
+{
+  "uid": "agentlab-warroom",
+  "title": "AI Agent 治理藍隊戰情室",
+  "tags": ["agentlab", "wazuh"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-24h", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "疑似 Prompt Injection 偵測",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "agentlab-wazuh-indexer"},
+      "targets": [{"refId": "A", "query": "rule.id:100902", "queryType": "lucene", "timeField": "timestamp",
+        "metrics": [{"id": "1", "type": "count"}],
+        "bucketAggs": [{"id": "2", "type": "date_histogram", "field": "timestamp", "settings": {"interval": "auto", "min_doc_count": "0"}}]}],
+      "options": {"reduceOptions": {"calcs": ["sum"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "area"},
+      "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "orange"}, "unit": "short"}, "overrides": []}
+    },
+    {
+      "id": 2, "type": "stat", "title": "治理閘道拒絕次數",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "agentlab-wazuh-indexer"},
+      "targets": [{"refId": "A", "query": "rule.id:100901", "queryType": "lucene", "timeField": "timestamp",
+        "metrics": [{"id": "1", "type": "count"}],
+        "bucketAggs": [{"id": "2", "type": "date_histogram", "field": "timestamp", "settings": {"interval": "auto", "min_doc_count": "0"}}]}],
+      "options": {"reduceOptions": {"calcs": ["sum"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "area"},
+      "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "blue"}, "unit": "short"}, "overrides": []}
+    },
+    {
+      "id": 3, "type": "stat", "title": "對內攻擊／對外外洩嘗試",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "agentlab-wazuh-indexer"},
+      "targets": [{"refId": "A", "query": "rule.id:100903 OR rule.id:100904", "queryType": "lucene", "timeField": "timestamp",
+        "metrics": [{"id": "1", "type": "count"}],
+        "bucketAggs": [{"id": "2", "type": "date_histogram", "field": "timestamp", "settings": {"interval": "auto", "min_doc_count": "0"}}]}],
+      "options": {"reduceOptions": {"calcs": ["sum"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none"},
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}, "color": {"mode": "thresholds"}}, "overrides": []}
+    },
+    {
+      "id": 4, "type": "stat", "title": "誘餌秘密外洩（受治理應為 0）",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "agentlab-wazuh-indexer"},
+      "targets": [{"refId": "A", "query": "rule.id:100907", "queryType": "lucene", "timeField": "timestamp",
+        "metrics": [{"id": "1", "type": "count"}],
+        "bucketAggs": [{"id": "2", "type": "date_histogram", "field": "timestamp", "settings": {"interval": "auto", "min_doc_count": "0"}}]}],
+      "options": {"reduceOptions": {"calcs": ["sum"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none"},
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}, "color": {"mode": "thresholds"}}, "overrides": []}
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "治理事件量（依規則群組）",
+      "gridPos": {"h": 9, "w": 16, "x": 0, "y": 5},
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "agentlab-wazuh-indexer"},
+      "targets": [{"refId": "A", "query": "rule.groups:agentlab", "queryType": "lucene", "timeField": "timestamp",
+        "metrics": [{"id": "1", "type": "count"}],
+        "bucketAggs": [
+          {"id": "3", "type": "terms", "field": "rule.groups", "settings": {"size": "10", "order": "desc", "orderBy": "_count"}},
+          {"id": "2", "type": "date_histogram", "field": "timestamp", "settings": {"interval": "auto", "min_doc_count": "0"}}]}],
+      "options": {"legend": {"displayMode": "table", "placement": "right"}, "tooltip": {"mode": "multi"}},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}, "unit": "short"}, "overrides": []}
+    },
+    {
+      "id": 6, "type": "stat", "title": "Agent 事件（依模式）",
+      "gridPos": {"h": 9, "w": 8, "x": 16, "y": 5},
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "agentlab-wazuh-indexer"},
+      "targets": [{"refId": "A", "query": "rule.id:100900", "queryType": "lucene", "timeField": "timestamp",
+        "metrics": [{"id": "1", "type": "count"}],
+        "bucketAggs": [{"id": "3", "type": "terms", "field": "data.mode", "settings": {"size": "5", "order": "desc", "orderBy": "_count"}}]}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": true}, "colorMode": "value", "graphMode": "none", "textMode": "value_and_name"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}, "overrides": []}
+    },
+    {
+      "id": 7, "type": "table", "title": "最新治理決策與告警",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 14},
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "agentlab-wazuh-indexer"},
+      "targets": [{"refId": "A", "query": "rule.groups:agentlab", "queryType": "lucene", "timeField": "timestamp",
+        "metrics": [{"id": "1", "type": "raw_data", "settings": {"size": "50", "order": "desc"}}],
+        "bucketAggs": []}],
+      "options": {"showHeader": true},
+      "fieldConfig": {"defaults": {}, "overrides": []}
+    }
+  ]
+}
