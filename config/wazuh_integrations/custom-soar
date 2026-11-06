@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+# Wazuh 自訂整合：把符合條件的告警 push 給 soar 服務的 /webhook。
+# 這等同你 SOAR 專案裡 Wazuh → Shuffle 的 webhook，只是這裡接的是本實驗的 soar 決策服務。
+#
+# Wazuh integratord 以位置參數呼叫本腳本：
+#   argv[1] = 告警 JSON 檔路徑   argv[2] = api_key（本例不用）   argv[3] = hook_url
+# 只用 Python 標準庫（urllib），manager 容器不需額外套件。
+import json
+import sys
+import urllib.request
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        return
+    alert_file = sys.argv[1]
+    hook_url = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else "http://soar:8000/webhook"
+    try:
+        with open(alert_file, encoding="utf-8") as f:
+            alert = json.load(f)
+    except Exception as e:  # noqa: BLE001
+        sys.stderr.write(f"custom-soar: cannot read alert file: {e}\n")
+        return
+    data = json.dumps({"alert": alert}).encode("utf-8")
+    req = urllib.request.Request(hook_url, data=data,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception as e:  # noqa: BLE001
+        sys.stderr.write(f"custom-soar: POST {hook_url} failed: {e}\n")
+
+
+if __name__ == "__main__":
+    main()

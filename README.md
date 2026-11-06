@@ -44,7 +44,8 @@ cd agent-lab-starter
 |---|---|---|
 | **Wazuh**（manager／indexer／dashboard 4.14.10） | 讀治理事件、用自訂規則偵測、存告警 | `https://<IP>:8443` |
 | **Grafana 戰情室** | 讀 `wazuh-alerts-*`，七面板即時大螢幕 | `http://<IP>:3000` |
-| **治理閘道 toolproxy**（PEP） | 驗憑證、查政策、代為執行、全程紀錄 | 內部 |
+| **治理閘道 toolproxy**（PEP） | 驗憑證、查政策、代為執行、全程紀錄；可被 SOAR 動態撤銷 token | 內部 |
+| **soar 決策層**（SOAR，Block 1） | 收 Wazuh 告警 → 信心度評分 V1–V5 → AUTO_BLOCK 撤銷 agent token（動態存取控制） | 內部 |
 | **AI Agent**（baseline／governed 兩種） | 受測對象；用 `docker compose run` 隨跑隨收 | 內部 |
 | postgres／victim／attacker-site／threatintel／llm-proxy | 假公司資料庫、受害主機、攻擊收集站、威脅情資、模型代理 | 內部 |
 
@@ -52,6 +53,8 @@ cd agent-lab-starter
 `100901` 閘道拒絕｜`100902` 疑似注入｜`100903` 對內攻擊(victim)｜`100904` 對外外洩(attacker)｜`100905` 待人工核准｜`100906` 已執行封鎖｜`100907` 誘餌秘密外洩。
 
 四個 Docker 網路做隔離：`svc_net`／`agent_net` 不能上網（internal），`egress_net` 可連模型，`ui_net` 開網頁埠。受治理 Agent 只連得到治理閘道與模型代理，連不到資料庫、內部主機與外網。
+
+**動態存取控制環路（Observe → Detect → Decide → Enforce）**：治理元件與（後續）Wazuh agent 觀察 Agent 行為 → Wazuh 偵測（規則 100901–100907）→ 官方 `<integration>` push 給 soar → 信心度評分（對齊計畫的 V1–V5、AUTO_BLOCK≥70）→ AUTO_BLOCK 時呼叫 toolproxy 撤銷該 Agent 的 token，Agent 下一個動作即被擋（第一階段以撤銷 token 模擬 PEP；後續可換成真實防火牆／路由器／AD）。
 
 ---
 

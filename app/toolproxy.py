@@ -155,6 +155,26 @@ HANDLERS = {"query_db": h_query_db, "search_logs": h_search_logs, "read_doc": h_
             "http_get": h_http_get, "block_ip": h_block_ip}
 STATUS = {"allow": 200, "pending": 202, "deny": 403, "error": 500}
 
+# ---------- SOAR 動態存取控制：token 撤銷 ----------
+# soar 服務在 AUTO_BLOCK 時呼叫 /revoke，把 agent 加入撤銷清單（寫檔，重啟後仍在）。
+# 之後該 agent 的每一次工具呼叫都會被擋——這就是 PEP 的「動態存取控制」。
+REVOKE_PATH = os.getenv("REVOKE_PATH", "/logs/revocations.json")
+SOAR_ADMIN_TOKEN = os.getenv("SOAR_ADMIN_TOKEN", "")
+
+
+def load_revoked() -> set:
+    try:
+        with open(REVOKE_PATH, encoding="utf-8") as f:
+            return set(json.load(f).get("revoked", []))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def save_revoked(revoked: set) -> None:
+    os.makedirs(os.path.dirname(REVOKE_PATH) or ".", exist_ok=True)
+    with open(REVOKE_PATH, "w", encoding="utf-8") as f:
+        json.dump({"revoked": sorted(revoked)}, f, ensure_ascii=False)
+
 
 @app.post("/tool/{name}")
 def tool(name: str, args: dict = Body(default={}), authorization: str = Header(default=""),
@@ -164,6 +184,9 @@ def tool(name: str, args: dict = Body(default={}), authorization: str = Header(d
     if not agent:  # 1. 認證
         record(x_trace_id, None, name, args, "deny", "憑證無效（未認證）")
         return JSONResponse({"decision": "deny", "reason": "憑證無效（未認證）"}, 401)
+    if agent["id"] in load_revoked():  # 1.5 動態存取控制：SOAR 已撤銷此身分
+        record(x_trace_id, agent, name, args, "deny", "token 已被 SOAR 撤銷（AUTO_BLOCK）")
+        return JSONResponse({"decision": "deny", "reason": "token 已被 SOAR 撤銷（AUTO_BLOCK）"}, 403)
     rules = POLICY["roles"].get(agent["role"], {}).get("tools", {}).get(name)
     if not rules or not rules.get("allow") or name not in HANDLERS:  # 2. 授權
         record(x_trace_id, agent, name, args, "deny", "此身分不允許使用此工具")
@@ -193,6 +216,35 @@ def ship_log(doc: dict = Body(...), authorization: str = Header(default="")):
     return {"ok": True}
 
 
+@app.post("/revoke")
+def revoke(body: dict = Body(default={}), x_soar_token: str = Header(default="")):
+    """SOAR 專用：撤銷某 agent 的存取（PEP 動態存取控制）。需 admin token。"""
+    if not SOAR_ADMIN_TOKEN or x_soar_token != SOAR_ADMIN_TOKEN:
+        return JSONResponse({"error": "unauthorized"}, 401)
+    agent_id = str(body.get("agent_id", "")).strip()
+    if not agent_id:
+        return JSONResponse({"error": "agent_id required"}, 400)
+    revoked = load_revoked()
+    revoked.add(agent_id)
+    save_revoked(revoked)
+    log_event("actions", {"action": "revoke_token", "agent_id": agent_id, "executed": True,
+                          "mode": "soar", "reason": str(body.get("reason", ""))})
+    return {"ok": True, "revoked": sorted(revoked)}
+
+
+@app.post("/unrevoke")
+def unrevoke(body: dict = Body(default={}), x_soar_token: str = Header(default="")):
+    """解除撤銷（對應情境三『更新完成後立刻解鎖』）。需 admin token。"""
+    if not SOAR_ADMIN_TOKEN or x_soar_token != SOAR_ADMIN_TOKEN:
+        return JSONResponse({"error": "unauthorized"}, 401)
+    agent_id = str(body.get("agent_id", "")).strip()
+    revoked = load_revoked()
+    revoked.discard(agent_id)
+    save_revoked(revoked)
+    log_event("actions", {"action": "unrevoke_token", "agent_id": agent_id, "executed": True, "mode": "soar"})
+    return {"ok": True, "revoked": sorted(revoked)}
+
+
 @app.get("/health")
 def health():
-    return {"ok": True, "agents": [a["id"] for a in TOKENS.values()]}
+    return {"ok": True, "agents": [a["id"] for a in TOKENS.values()], "revoked": sorted(load_revoked())}

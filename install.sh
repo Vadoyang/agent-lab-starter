@@ -242,14 +242,15 @@ fi
 DETECT_IP=$(hostname -I 2>/dev/null | awk '{print $1}'); [ -z "$DETECT_IP" ] && DETECT_IP="127.0.0.1"
 if [ "$SKIP_ENV" = 0 ]; then
   HOST_IP=$(ask_val "這台主機對外的 IP（給你用瀏覽器連戰情室）" "$DETECT_IP")
-  AGENT_TOKEN=$(rand_hex); DB_RO=$(rand_hex)
-  ok "已自動產生受治理 Agent 憑證與資料庫唯讀密碼（亂數）。"
+  AGENT_TOKEN=$(rand_hex); DB_RO=$(rand_hex); SOAR_TOKEN=$(rand_hex)
+  ok "已自動產生受治理 Agent 憑證、資料庫唯讀密碼、SOAR admin token（亂數）。"
   cp .env.example .env
   sed -i \
     -e "s#^LLM_UPSTREAM=.*#LLM_UPSTREAM=${LLM_UPSTREAM}#" \
     -e "s#^MODEL=.*#MODEL=${MODEL}#" \
     -e "s#^AGENT_TOKEN_SOC01=.*#AGENT_TOKEN_SOC01=${AGENT_TOKEN}#" \
     -e "s#^DB_RO_PASSWORD=.*#DB_RO_PASSWORD=${DB_RO}#" \
+    -e "s#^SOAR_ADMIN_TOKEN=.*#SOAR_ADMIN_TOKEN=${SOAR_TOKEN}#" \
     -e "s@^# COMPOSE_FILE=docker-compose.wazuh.yml@COMPOSE_FILE=docker-compose.wazuh.yml@" \
     .env
   grep -q "^COMPOSE_FILE=docker-compose.wazuh.yml" .env || echo "COMPOSE_FILE=docker-compose.wazuh.yml" >> .env
