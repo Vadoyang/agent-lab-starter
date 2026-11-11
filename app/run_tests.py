@@ -5,6 +5,8 @@
     docker compose run --rm agent-governed python run_tests.py            # 考「受治理」的 Agent
     docker compose run --rm agent-governed python run_tests.py --repeat 5 --only A3,A4
     docker compose run --rm agent-governed python run_tests.py --checks   # 只做網路隔離檢查
+受治理 Agent 的護欄開關由 Gateway 決定（入口網站切換，或 GUARDRAILS_DEFAULT）；結果檔名會標出條件：
+    baseline／governed（只有 Gateway）／governed+guard（Gateway＋護欄）
 
 結果存在 results/ 資料夾：每次一個 CSV（逐題逐次）與一個 summary .md（彙總表）。
 """
@@ -82,8 +84,10 @@ def run_cases(cases: list[dict], repeat: int) -> list[dict]:
             try:
                 out = agent.run(case["prompt"], trace_id)
                 answer, n_tools, err = out["answer"], len(out["tool_calls"]), ""
+                guard_on = (out.get("guard") or {}).get("enabled")
             except Exception as e:  # noqa: BLE001
                 answer, n_tools, err = "", 0, f"{type(e).__name__}: {e}"[:300]
+                guard_on = None
             time.sleep(1.0)  # 等其他容器把紀錄寫完
             ok, why = check(case.get("success"), answer, trace_id)
             tried, why_try = check(case.get("attempt"), answer, trace_id)
@@ -94,15 +98,24 @@ def run_cases(cases: list[dict], repeat: int) -> list[dict]:
                 "evidence": "；".join(why + why_try)[:300], "n_tool_calls": n_tools,
                 "latency_s": round(time.time() - t0, 1), "error": err,
                 "answer_excerpt": (answer or "").replace("\n", " ")[:200],
-                "mode": agent.MODE, "model": agent.MODEL})
+                "mode": agent.MODE, "model": agent.MODEL,
+                "guardrails": "" if guard_on is None else int(bool(guard_on))})
             mark = "✔" if ok else "·"
             print(f"  [{case['id']} #{rep}] {mark} 達成={ok} 嘗試={tried} 工具={n_tools} "
                   f"{rows[-1]['latency_s']}s {err}", flush=True)
     return rows
 
 
+def condition(rows: list[dict]) -> str:
+    """實驗條件：baseline／governed（只有 Gateway）／governed+guard（Gateway＋護欄）。"""
+    if agent.MODE != "governed":
+        return agent.MODE
+    flags = {r.get("guardrails") for r in rows if r.get("guardrails") != ""}
+    return "governed+guard" if flags == {1} else ("governed" if flags == {0} else "governed-mixed")
+
+
 def summarize(rows: list[dict], cases: list[dict]) -> str:
-    lines = [f"# 測試彙總：mode={agent.MODE}　model={agent.MODEL}　"
+    lines = [f"# 測試彙總：condition={condition(rows)}　model={agent.MODEL}　"
              f"時間={datetime.datetime.now().isoformat(timespec='seconds')}", "",
              "| 題號 | 類型 | 題目 | 達成 k/N | 達成率 | 95% CI | 嘗試 k/N |",
              "|---|---|---|---|---|---|---|"]
@@ -126,7 +139,8 @@ def network_checks() -> None:
     # 用哪個版本就看哪一行（另一行會因名稱不存在而顯示連不到，屬正常）。
     targets = [("postgres", 5432), ("elasticsearch", 9200), ("wazuh.indexer", 9200),
                ("victim", 8080), ("attacker-site", 8080),
-               ("threatintel", 8080), ("toolproxy", 8000), ("llm-proxy", 8080), ("1.1.1.1", 443)]
+               ("threatintel", 8080), ("guard", 8000), ("toolproxy", 8000), ("llm-proxy", 8080),
+               ("1.1.1.1", 443)]
     print(f"\n網路隔離檢查（mode={agent.MODE}）")
     for host, port in targets:
         try:
@@ -165,7 +179,7 @@ def main() -> None:
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    tag = f"{stamp}_{agent.MODE}_{re.sub(r'[^A-Za-z0-9._-]', '-', agent.MODEL)}"
+    tag = f"{stamp}_{condition(rows)}_{re.sub(r'[^A-Za-z0-9._-]', '-', agent.MODEL)}"
     with open(os.path.join(RESULTS_DIR, f"{tag}.csv"), "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()

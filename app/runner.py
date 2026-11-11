@@ -11,7 +11,8 @@
 支援的工作（type）：
   ask     自由提問：跑一次 Agent，回傳回答、工具呼叫、閘道決策、偵測結果與兩條鐵律判定
   test    考卷單題：跑 tests.yaml 的一題，依題目的判定條件給出「達成/嘗試」
-  checks  網路隔離檢查：這個容器連得到哪些地方
+  checks  網路隔離檢查：這個容器連得到哪些地方（受治理 Agent 應只連得到 toolproxy 與 llm-proxy；
+          護欄服務 guard 也必須連不到——護欄只能由 Gateway 代為呼叫）
 """
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ MAX_QUESTION = 1000
 HEARTBEAT_S = 10
 MODEL_CHECK_S = 30
 TARGETS = [("postgres", 5432), ("wazuh.indexer", 9200), ("victim", 8080), ("attacker-site", 8080),
-           ("threatintel", 8080), ("toolproxy", 8000), ("llm-proxy", 8080), ("1.1.1.1", 443)]
+           ("threatintel", 8080), ("guard", 8000), ("toolproxy", 8000), ("llm-proxy", 8080), ("1.1.1.1", 443)]
 
 _model_cache = {"ts": 0.0, "ok": False, "detail": ""}
 
@@ -82,6 +83,8 @@ def trace_summary(trace_id: str) -> dict:
     decisions = read_events("toolproxy-decisions", trace_id)
     sinks = read_events("sink-hits", trace_id)
     actions = read_events("actions", trace_id)
+    guards = read_events("guard-decisions", trace_id)
+    llm = read_events("llm-calls", trace_id)
     gate = {"allow": 0, "deny": 0, "pending": 0, "error": 0}
     for d in decisions:
         gate[d.get("decision", "error")] = gate.get(d.get("decision", "error"), 0) + 1
@@ -96,6 +99,13 @@ def trace_summary(trace_id: str) -> dict:
         "attacker_hits": [s.get("path") for s in sinks if s.get("role") == "attacker"][:10],
         "executed_actions": [{"action": a.get("action"), "ip": a.get("ip")}
                              for a in actions if a.get("executed")][:10],
+        # 護欄在這次任務的每個檢查點做了什麼（只列有動作的：遮蔽或攔下）
+        "guard": [{"stage": g.get("stage"), "decision": g.get("guard_decision"), "tool": g.get("tool"),
+                   "categories": g.get("categories"), "engine": g.get("engine")}
+                  for g in guards if g.get("guard_decision") in ("redact", "block")][:12],
+        "guard_checks": len(guards),
+        "llm_calls": {"allow": sum(1 for x in llm if x.get("llm_decision") == "allow"),
+                      "deny": sum(1 for x in llm if x.get("llm_decision") == "deny")},
     }
 
 
@@ -115,8 +125,10 @@ def run_agent(question: str, trace_id: str) -> dict:
     out = agent.run(question, trace_id)
     time.sleep(1.5)  # 等 toolproxy／sink 把紀錄寫完
     summ = trace_summary(trace_id)
+    # 判定一律用「實際交出去的回答」（護欄遮蔽後的版本）
     return {"answer": out.get("answer", ""), "tool_calls": out.get("tool_calls", []),
             "end_reason": out.get("end_reason", ""), "latency_s": round(time.time() - t0, 1),
+            "guardrails": (out.get("guard") or {}).get("enabled"),
             "trace": summ, "verdict": verdict(out.get("answer", ""), summ)}
 
 

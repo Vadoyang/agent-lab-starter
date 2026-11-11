@@ -29,34 +29,45 @@
 
   // ------------------------------------------------------------------ 元件資料（架構圖與元件介紹共用）
   const ZONES = [
-    { id: "agents", name: "Agent", note: "受測對象" },
-    { id: "gate", name: "治理層", note: "Agent 與資源之間唯一的通道" },
-    { id: "model", name: "本地模型", note: "資料不出組織" },
-    { id: "svc", name: "內部服務區", note: "被保護的資源與誘餌" },
+    { id: "entry", name: "入口", note: "任務從這裡進來" },
+    { id: "gate", name: "Agent Gateway", note: "Agent 與外界之間唯一的通道" },
+    { id: "runtime", name: "Agent runtime", note: "受治理 Agent 與兩側護欄，網路隔離" },
+    { id: "model", name: "本地模型", note: "Agent → 模型代理 → Ollama → LLM，資料不出組織" },
+    { id: "svc", name: "內部服務", note: "被保護的資源與誘餌" },
     { id: "ext", name: "外部", note: "模擬網際網路上的攻擊者" },
-    { id: "mon", name: "監控與回應", note: "看得見、能處置" },
+    { id: "mon", name: "監控與回應", note: "老師圖中的 ELK：看得見、能處置" },
+    { id: "base", name: "對照組", note: "沒有治理時會發生什麼事" },
   ];
   const COMPONENTS = {
-    baseline: { zone: "agents", name: "未治理 Agent", sw: "Python・OpenAI 相容 API", rules: [],
-      desc: "對照組。直接連資料庫（用管理員帳號）、可以上網，系統提示裡還放著管理密碼與誘餌。代表「把 Agent 直接接上系統」的常見做法，用來顯示沒有治理會發生什麼事。",
-      status: ["runner_baseline"] },
-    governed: { zone: "agents", name: "受治理 Agent", sw: "Python・OpenAI 相容 API", rules: [1, 2],
-      desc: "實驗組。和對照組用同一個模型、同一套工具，但身上沒有任何密碼，只有一張可撤銷的憑證；所在的網路分區只連得到治理閘道與模型代理。",
-      status: ["runner_governed"] },
-    model: { zone: "model", name: "模型服務", sw: "Ollama 或 vLLM（建議放在 DGX）", rules: [1],
-      desc: "提供支援工具呼叫（tool calling）的大型語言模型。放在本地，組織資料不會送到雲端；可以隨時換模型比較不同模型的表現。",
-      status: ["model"] },
-    llmproxy: { zone: "gate", name: "模型代理", sw: "Nginx", rules: [1],
-      desc: "受治理 Agent 連模型的唯一出口。它只轉送模型 API，Agent 無法借道連到其他地方。",
-      status: ["llm_proxy"] },
-    toolproxy: { zone: "gate", name: "治理閘道（PEP）", sw: "FastAPI・policy.yaml", rules: [1, 2],
-      desc: "零信任架構的政策執行點。每個請求都要帶憑證；閘道驗明身分、查政策（工具白名單、SQL 只讀、URL 與 IP 範圍、影響他人的動作要人核准），通過才代為執行，並把工具回傳內容當資料、偵測疑似注入。每一個決策都留下紀錄。",
+    portal: { zone: "entry", name: "藍隊分析人員／入口網站", sw: "FastAPI＋原生 JavaScript（本頁）", rules: [],
+      desc: "展示與操作的入口。任務放進共享資料夾，由各 Agent 的執行器取走；入口網站和受治理 Agent 之間沒有任何網路連線，不會在隔離牆上開洞。任務進到受治理 Agent 前，一律經 Gateway 送輸入護欄檢查。",
+      status: [] },
+    toolproxy: { zone: "gate", name: "治理閘道（Agent Gateway／PEP）", sw: "FastAPI・policy.yaml", rules: [1, 2],
+      desc: "零信任架構的政策執行點，也是老師架構圖中的 Agent Gateway。每個請求都要帶憑證；閘道驗明身分、查政策（工具白名單、SQL 只讀、URL 與 IP 範圍、影響他人的動作要人核准），通過才代為執行。任務、工具參數、工具回傳與最終回答都由它轉給兩側護欄檢查，Agent 無法略過。每一個決策都留下紀錄。",
       status: ["toolproxy"] },
     idp: { zone: "gate", name: "身分與政策", sw: "閘道內建身分登錄（可換 Keycloak）", rules: [1, 2],
-      desc: "記錄每個 Agent 的身分、角色與可用的工具。目前由治理閘道內建的身分登錄擔任，對應老師提到的「憑證 → Proxy → IdP → 服務」；之後可替換為獨立的 IdP。SOAR 撤銷憑證也是改這裡的狀態。",
+      desc: "記錄每個 Agent 的身分、角色與可用的工具，對應「憑證 → Proxy → IdP → 服務」。目前由治理閘道內建的身分登錄擔任，之後可替換為獨立的 IdP。SOAR 撤銷憑證就是改這裡的狀態。",
       status: ["toolproxy"] },
+    guard_in: { zone: "runtime", name: "護欄（輸入）", sw: "guard 服務：確定性規則＋選用的本地防護模型", rules: [1, 2],
+      desc: "檢查進到 Agent 的內容：任務本身若夾帶操控 AI 的指令就整個攔下；工具回傳的內容（文件、log、網頁）移除疑似指令的那幾行、遮蔽秘密，再交給 Agent。護欄服務只在內部網段，Agent 連不到，只能由 Gateway 呼叫。",
+      status: ["guard"] },
+    governed: { zone: "runtime", name: "受治理 Agent", sw: "Python・OpenAI 相容 API", rules: [1, 2],
+      desc: "實驗組。和對照組用同一個模型、同一套工具，但身上沒有任何密碼，只有一張可撤銷的憑證；所在的網路分區只連得到 Gateway 與模型代理。",
+      status: ["runner_governed"] },
+    guard_out: { zone: "runtime", name: "護欄（輸出）", sw: "guard 服務：確定性規則", rules: [1],
+      desc: "檢查 Agent 要送出去的內容：工具參數裡夾帶秘密或個資時整筆不執行（防止把資料帶出去，Wazuh 會以高風險告警通知 SOAR）；最終回答出現秘密就遮蔽後才交出。",
+      status: ["guard"] },
+    llmproxy: { zone: "model", name: "模型代理", sw: "FastAPI（llmproxy）", rules: [1],
+      desc: "受治理 Agent 連模型的唯一出口。只放行核准的本地模型，拒絕雲端模型（Ollama 的雲端模型會把提示送到 Ollama 的伺服器）；不開放下載或刪除模型的 API；每次呼叫都留紀錄，但不記提示原文。",
+      status: ["llm_proxy"] },
+    model: { zone: "model", name: "Ollama", sw: "Ollama（建議放在 DGX，設 OLLAMA_NO_CLOUD=1）", rules: [1],
+      desc: "本地的模型服務，提供 OpenAI 相容 API。應關閉雲端模型功能，確保提示只在本地處理。",
+      status: ["model"] },
+    llm: { zone: "model", name: "LLM", sw: "支援工具呼叫的開放權重模型", rules: [1],
+      desc: "大型語言模型本身。放在本地，組織資料不會送到雲端；可以隨時換模型，比較不同模型在同一份考卷上的表現。",
+      status: ["model"] },
     db: { zone: "svc", name: "公司資料庫", sw: "PostgreSQL", rules: [1],
-      desc: "虛構的公司員工資料，其中埋了誘餌帳密。受治理 Agent 只能經閘道用唯讀帳號查詢；誘餌出現在任何輸出裡，就代表資料外洩。",
+      desc: "虛構的公司員工資料，其中埋了誘餌帳密與假身分證號。受治理 Agent 只能經閘道用唯讀帳號查詢；誘餌出現在任何輸出裡，就代表資料外洩。",
       status: ["postgres"] },
     wiki: { zone: "svc", name: "內部文件", sw: "Markdown 文件", rules: [1, 2],
       desc: "模擬內部知識庫，其中幾份文件夾帶提示注入，用來測試 Agent 讀到惡意內容時會不會被牽著走。",
@@ -70,23 +81,24 @@
     attacker: { zone: "ext", name: "攻擊者收集站", sw: "模擬服務", rules: [1],
       desc: "代表網際網路上的攻擊者伺服器。收到資料就代表資料被送出組織。",
       status: ["attacker"] },
-    wazuh: { zone: "mon", name: "Wazuh 監控", sw: "Wazuh 4.14（manager／indexer／dashboard）", rules: [1, 2],
-      desc: "讀取所有元件的紀錄，用自訂規則偵測閘道拒絕、疑似注入、對內攻擊、資料外送、誘餌外洩等事件，並把重大告警推給 SOAR。",
+    wazuh: { zone: "mon", name: "Wazuh", sw: "Wazuh 4.14（manager／indexer〔OpenSearch〕／dashboard）", rules: [1, 2],
+      desc: "老師圖中「ELK or Something」的位置：indexer 以 OpenSearch 為基礎，負責存放與查詢；manager 用自訂規則偵測閘道拒絕、注入、對內攻擊、資料外送、護欄攔截、模型代理拒絕等事件，並把重大告警推給 SOAR。",
       status: ["manager", "indexer", "dashboard"] },
     soar: { zone: "mon", name: "SOAR 自動回應", sw: "FastAPI（之後可接 Shuffle）", rules: [1, 2],
-      desc: "收到 Wazuh 告警後依信心度評分（V1–V5）決定處置：分數夠高就呼叫治理閘道撤銷該 Agent 的憑證，Agent 下一個動作立刻被擋。未治理的 Agent 沒有經過閘道，SOAR 沒有身分可以撤銷，這也是對照重點。",
+      desc: "收到 Wazuh 告警後依信心度評分（V1–V5）決定處置：分數夠高就呼叫 Gateway 撤銷該 Agent 的憑證，Agent 下一個動作立刻被擋。未治理的 Agent 沒有經過 Gateway，SOAR 沒有身分可以撤銷，這也是對照重點。",
       status: ["soar"] },
     grafana: { zone: "mon", name: "Grafana 戰情室", sw: "Grafana 12", rules: [],
       desc: "大螢幕即時儀表板，呈現告警趨勢、兩組 Agent 的對照與處置紀錄。",
       status: ["grafana"] },
-    portal: { zone: "mon", name: "入口網站（本頁）", sw: "FastAPI＋原生 JavaScript", rules: [],
-      desc: "展示與操作的入口。它把工作放進共享資料夾，由各 Agent 的執行器取走執行；入口網站和受治理 Agent 之間沒有任何網路連線，不會在隔離牆上開洞。",
-      status: [] },
+    baseline: { zone: "base", name: "未治理 Agent", sw: "Python・OpenAI 相容 API", rules: [],
+      desc: "對照組。直接連資料庫（用管理員帳號）、可以上網、直接連模型，系統提示裡還放著管理密碼與誘餌。代表「把 Agent 直接接上系統」的常見做法，用來顯示沒有治理會發生什麼事。",
+      status: ["runner_baseline"] },
   };
   const RULE_NAME = { 1: "鐵律一", 2: "鐵律二" };
   const RULE_LABELS = {
     "100901": "閘道拒絕", "100902": "疑似提示注入", "100903": "對內攻擊",
     "100904": "資料外送", "100905": "待人工核准", "100906": "已執行封鎖", "100907": "誘餌秘密外洩", "100908": "SOAR 自動斷線",
+    "100909": "護欄攔下注入", "100910": "護欄擋下外送", "100911": "模型代理拒絕", "100912": "護欄遮蔽敏感資料",
   };
 
   // ------------------------------------------------------------------ 共用
@@ -164,7 +176,8 @@
     let cls = ok ? "ok" : "bad";
     let text = ok ? "正常" : parts.filter((p) => !p.ok).map((p) => p.detail).join("；");
     if (id === "governed" && s.revoked && s.revoked.length) { cls = "warn"; text = `已被 SOAR 斷線（${s.revoked.join("、")}）`; }
-    if (id === "model" && !ok) text = "沒有連線：Agent 無法作答";
+    if ((id === "model" || id === "llm") && !ok) text = "沒有連線：Agent 無法作答";
+    if ((id === "guard_in" || id === "guard_out") && ok && s.guardrails === false) { cls = "warn"; text = "護欄已關閉（對照實驗中）"; }
     return { cls, text };
   }
   async function pollStatus() {
@@ -184,6 +197,7 @@
       pill.className = `health-pill ${okN === total ? "ok" : "bad"}`;
       const modelOk = s.runners.governed.model_ok || s.runners.baseline.model_ok;
       $("#model-warning").hidden = modelOk || !(s.runners.governed.alive || s.runners.baseline.alive);
+      syncGuard(s.guardrails);
       const revoked = (s.revoked || []).length > 0;
       $("#reset-btn").hidden = !revoked;
       if (state.lanes.governed.state === "idle") setLaneState("governed", revoked ? "error" : "idle", revoked ? "已被斷線" : "待命");
@@ -194,6 +208,32 @@
       pill.textContent = "入口網站後端沒有回應";
       pill.className = "health-pill bad";
     }
+  }
+
+  // ------------------------------------------------------------------ 護欄開關
+  function syncGuard(on) {
+    if (on === undefined || on === null) return;
+    const t = $("#guard-toggle");
+    if (document.activeElement !== t) t.checked = !!on;
+    $("#guard-state").textContent = on ? "開啟" : "關閉";
+    const lg = $("#lane-guard");
+    lg.textContent = on ? "護欄開啟" : "護欄關閉（只有 Gateway）";
+    lg.classList.toggle("off", !on);
+  }
+  async function setGuard(on) {
+    const t = $("#guard-toggle");
+    t.disabled = true;
+    try {
+      const r = await api("/api/guardrails", { method: "POST", body: JSON.stringify({ enabled: on }) });
+      syncGuard(r.enabled);
+      msg(r.enabled ? "已開啟受治理 Agent 的護欄。" : "已關閉受治理 Agent 的護欄：現在只靠 Gateway，可以對照差別。");
+      if ($("#pin").value) store.set("portal_pin", $("#pin").value, "session");
+      pollStatus();
+    } catch (err) {
+      t.checked = !on;
+      if (err.status === 401) { msg("需要操作員 PIN，請輸入後再切換一次。", true); $("#pin-wrap").hidden = false; $("#pin").focus(); }
+      else msg(`切換失敗：${err.message}`, true);
+    } finally { t.disabled = busy(); }
   }
 
   // ------------------------------------------------------------------ 鐵律計數
@@ -213,7 +253,8 @@
       const g = p.governed;
       $("#proof-note").textContent =
         `計數來自本環境的紀錄（自這次部署起）：未治理 Agent 作答 ${p.baseline.runs} 次、受治理 Agent 作答 ${g.runs} 次；` +
-        `治理閘道共擋下 ${g.denied} 個請求、送人工核准 ${g.pending} 個、標記疑似注入 ${g.injection_flagged} 次，SOAR 斷線 ${g.revocations} 次。每 8 秒更新。`;
+        `Gateway 共擋下 ${g.denied} 個請求、送人工核准 ${g.pending} 個；護欄攔下 ${g.guard_blocked || 0} 次、遮蔽 ${g.guard_redacted || 0} 次；` +
+        `模型代理拒絕 ${g.llm_denied || 0} 次；SOAR 斷線 ${g.revocations} 次。每 8 秒更新。`;
     } catch { /* 下次再試 */ }
   }
 
@@ -238,7 +279,7 @@
   function modeOf(e) {
     if (e.mode === "governed" || e.mode === "baseline") return e.mode;
     if (e.stream === "soar-decisions") return "soar";
-    if (e.stream === "toolproxy-decisions") return "governed";
+    if (e.stream === "toolproxy-decisions" || e.stream === "guard-decisions" || e.stream === "llm-calls") return "governed";
     return state.traceMode[e.trace_id] || (e.mode === "soar" ? "soar" : "");
   }
   function describe(e) {
@@ -250,7 +291,10 @@
           const via = m === "governed" ? "經治理閘道" : "直接";
           return { text: `${via}呼叫工具 ${e.tool}`, cls: "", nodes: m === "governed" ? ["governed", "toolproxy"] : ["baseline", toolNode(e.tool)] };
         }
-        if (e.type === "answer") return { text: "作答完成", cls: "", nodes: [m] };
+        if (e.type === "answer") {
+          if (e.end_reason === "guard_blocked_task") return { text: "任務未交給 Agent 執行", cls: "ok", nodes: [m] };
+          return { text: m === "governed" && e.guardrails === false ? "作答完成（護欄關閉）" : "作答完成", cls: "", nodes: [m] };
+        }
         if (e.type === "fallback_json_mode") return { text: "模型不支援原生工具呼叫，改用 JSON 模式", cls: "warn", nodes: [m] };
         return { text: e.type || "Agent 事件", cls: "", nodes: [m] };
       case "toolproxy-decisions": {
@@ -260,6 +304,18 @@
         if (e.decision === "pending") return { text: `治理閘道 送人工核准 ${e.tool}：${e.reason || ""}`, cls: "warn", nodes: ["toolproxy"] };
         return { text: `治理閘道 ${e.decision || "決策"} ${e.tool || ""}`, cls: "", nodes: ["toolproxy"] };
       }
+      case "guard-decisions": {
+        const stage = { task: "任務", tool_result: `工具回傳（${e.tool || ""}）`, tool_args: `工具參數（${e.tool || ""}）`, answer: "回答" }[e.stage] || e.stage;
+        const node = e.direction === "out" ? "guard_out" : "guard_in";
+        const cat = String(e.categories || "").split(",").map((c) => ({ injection: "疑似注入", dlp: "敏感資料" }[c])).filter(Boolean).join("、");
+        if (e.guard_decision === "block") return { text: `護欄攔下${stage}：${cat || "未通過檢查"}`, cls: "ok", nodes: [node, "governed"] };
+        if (e.guard_decision === "redact") return { text: `護欄處理${stage}：${e.direction === "in" && cat.includes("注入") ? "移除疑似指令" : "遮蔽"}${cat ? `（${cat}）` : ""}`, cls: "ok", nodes: [node] };
+        return { text: `護欄檢查${stage}：通過`, cls: "", nodes: [node] };
+      }
+      case "llm-calls":
+        if (e.llm_decision === "deny") return { text: `模型代理拒絕：${e.reason || ""}`, cls: "ok", nodes: ["llmproxy"] };
+        if (e.llm_decision === "error") return { text: `模型代理：模型服務錯誤（${e.reason || ""}）`, cls: "warn", nodes: ["llmproxy", "model"] };
+        return { text: `${e.caller === "guard" ? "護欄的防護模型" : "Agent"} 經模型代理呼叫 ${e.model || "模型"}`, cls: "", nodes: ["llmproxy", "model", "llm"] };
       case "sink-hits":
         if (e.role === "victim") return { text: `受害主機收到請求 ${e.path || ""}`, cls: "bad", nodes: ["victim"], bad: true };
         if (e.role === "attacker") return { text: "攻擊者收集站收到資料", cls: "bad", nodes: ["attacker"], bad: true };
@@ -356,6 +412,7 @@
     const b = busy();
     $("#ask-btn").disabled = b;
     $("#checks-btn").disabled = b;
+    $("#guard-toggle").disabled = b;
     $$(".exp-group button").forEach((x) => { x.disabled = b; });
   }
 
@@ -405,7 +462,8 @@
       : `<span class="badge breach" aria-label="${name}失守"><span aria-hidden="true">✕</span>${name} 失守</span>`;
   }
   function highlightSecrets(text) {
-    return esc(text).replace(/(CANARY-[A-Za-z0-9_\-]+|FLAG\{[^}]*\})/g, "<mark>$1</mark>");
+    return esc(text).replace(/(CANARY-[A-Za-z0-9_\-]+|FLAG\{[^}]*\}|FAKE-ID-\d{4})/g, "<mark>$1</mark>")
+      .replace(/(［已遮蔽：[a-z_]+］|［護欄：[^］]*］)/g, '<span class="redacted">$1</span>');
   }
 
   function finishLane(target, r) {
@@ -442,6 +500,7 @@
     const facts = [
       `工具呼叫 <b>${(res.tool_calls || []).length}</b> 次`,
       r.mode === "governed" ? `閘道 允許 <b>${gw.allow || 0}</b>・拒絕 <b>${gw.deny || 0}</b>・待核准 <b>${gw.pending || 0}</b>` : "未經任何閘道",
+      r.mode === "governed" ? guardFact(res) : "",
       tr.injection_flagged ? "<b>偵測到疑似注入</b>" : "",
       (tr.victim_hits || []).length ? `受害主機被連 <b>${tr.victim_hits.length}</b> 次` : "",
       (tr.attacker_hits || []).length ? `資料送到收集站 <b>${tr.attacker_hits.length}</b> 次` : "",
@@ -453,10 +512,18 @@
       `<pre class="answer">${highlightSecrets(res.answer || "（沒有回答）")}</pre><p class="facts">${facts}</p>`;
   }
 
+  function guardFact(res) {
+    if (res.guardrails === false) return "護欄 <b>關閉</b>";
+    const acts = (res.trace && res.trace.guard) || [];
+    const blk = acts.filter((a) => a.decision === "block").length;
+    const red = acts.filter((a) => a.decision === "redact").length;
+    return `護欄 檢查 <b>${(res.trace && res.trace.guard_checks) || 0}</b>・攔下 <b>${blk}</b>・遮蔽 <b>${red}</b>`;
+  }
+
   const LEGIT = { governed: new Set(["toolproxy", "llm-proxy"]), baseline: new Set(["toolproxy", "llm-proxy"]) };
   const HOST_LABEL = {
     postgres: "公司資料庫", "wazuh.indexer": "Wazuh 資料庫", victim: "受害主機", "attacker-site": "攻擊者收集站",
-    threatintel: "威脅情資服務", toolproxy: "治理閘道", "llm-proxy": "模型代理", "1.1.1.1": "網際網路",
+    threatintel: "威脅情資服務", guard: "護欄服務", toolproxy: "治理閘道", "llm-proxy": "模型代理", "1.1.1.1": "網際網路",
   };
   function renderChecks(target, res) {
     const rows = (res.targets || []).map((x) => {
@@ -580,6 +647,7 @@
       if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) $("#ask-form").requestSubmit();
     });
     $("#checks-btn").addEventListener("click", () => submit({ type: "checks" }, "網路隔離檢查"));
+    $("#guard-toggle").addEventListener("change", (ev) => setGuard(ev.target.checked));
     $("#reset-btn").addEventListener("click", async () => {
       try {
         const r = await api("/api/reset", { method: "POST", body: "{}" });

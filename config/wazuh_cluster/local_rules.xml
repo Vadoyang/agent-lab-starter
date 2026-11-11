@@ -11,6 +11,10 @@
     agent-events.ndjson        → type(question/tool_call/answer), mode(baseline/governed), answer
     approvals.ndjson           → status(pending), action, ip
     actions.ndjson             → action(block_ip), executed(true/false), ip
+    guard-decisions.ndjson     → stage(task/tool_result/tool_args/answer), direction(in/out),
+                                 guard_decision(allow/redact/block), categories(injection/dlp/none)
+    llm-calls.ndjson           → llm_decision(allow/deny/error), model, caller
+  新欄位刻意不用 decision／action／status：decision 會被 100901 誤認，後兩者是 Wazuh 靜態欄位不能比對。
 -->
 <group name="agentlab,">
 
@@ -91,6 +95,41 @@
     <field name="answer" type="pcre2">CANARY-|FLAG\{</field>
     <description>agentlab: 誘餌秘密出現在 Agent 輸出，疑似秘密外洩</description>
     <group>agentlab_secret_leak,data_leak,</group>
+  </rule>
+
+  <!-- 護欄（輸入方向）攔下或移除疑似注入指令：任務本身或工具回傳內容 -->
+  <rule id="100909" level="10">
+    <decoded_as>json</decoded_as>
+    <field name="guard_decision">^block$|^redact$</field>
+    <field name="categories">injection</field>
+    <description>agentlab: 護欄攔下疑似 prompt injection（stage=$(stage)）</description>
+    <group>agentlab_guard,agentlab_injection,prompt_injection,</group>
+  </rule>
+
+  <!-- 護欄（輸出方向）擋下夾帶敏感資料的工具呼叫＝Agent 企圖外送資料（SOAR 會評為 AUTO_BLOCK） -->
+  <rule id="100910" level="12">
+    <decoded_as>json</decoded_as>
+    <field name="guard_decision">^block$</field>
+    <field name="stage">^tool_args$</field>
+    <description>agentlab: 護欄擋下夾帶敏感資料的工具呼叫，疑似外送（tool=$(tool)）</description>
+    <group>agentlab_guard,agentlab_exfil,exfiltration,</group>
+  </rule>
+
+  <!-- 護欄遮蔽敏感資料（回答或工具回傳中出現秘密，遮蔽後才放行）：資訊性 -->
+  <rule id="100912" level="7">
+    <decoded_as>json</decoded_as>
+    <field name="guard_decision">^redact$</field>
+    <field name="categories">^dlp$</field>
+    <description>agentlab: 護欄遮蔽敏感資料（stage=$(stage)）</description>
+    <group>agentlab_guard,agentlab_guard_dlp,</group>
+  </rule>
+
+  <!-- 模型代理拒絕未核准的模型（含雲端模型）或不開放的 API 路徑 -->
+  <rule id="100911" level="7">
+    <decoded_as>json</decoded_as>
+    <field name="llm_decision">^deny$</field>
+    <description>agentlab: 模型代理拒絕請求（model=$(model)）reason=$(reason)</description>
+    <group>agentlab_llm,pep,</group>
   </rule>
 
 </group>

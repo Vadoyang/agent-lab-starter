@@ -41,6 +41,9 @@
   .\install-windows.ps1 -InstallArgs '--ollama point --model-url http://192.168.1.50:11434'
 
 .NOTES
+  結束代碼：0＝完成；3010＝需要重新開機後重跑；2＝需要人手動完成一步後重跑；1＝失敗。
+  自動化佈署（例如 Codex）請帶齊不互動參數，例如：
+    -InstallArgs '--yes --docker install --ollama point --model-url http://<DGX>:11434 --model <模型> --host-ip <本機IP>'
   本檔需存成 UTF-8（含 BOM），Windows PowerShell 5.1 才能正確顯示中文。
   標示〔待實機驗證〕的步驟尚未在實體 Windows 主機上驗證過。
 #>
@@ -105,7 +108,7 @@ if ($LASTEXITCODE -ne 0) {
   Info "這台電腦還沒有 WSL，開始安裝（不含發行版）…"
   & wsl.exe --install --no-distribution
   Warn "WSL 安裝完成後需要重新開機。請重新開機，再以系統管理員身分執行一次本腳本。"
-  exit 0
+  exit 3010   # 3010＝需要重新開機（Windows 安裝程式慣例），自動化佈署據此停下來請人重開機
 }
 Info "更新 WSL 到最新版…"
 & wsl.exe --update | Out-Host
@@ -150,7 +153,7 @@ if ((Get-Distros) -notcontains $Distro) {
 if ((Get-Distros) -notcontains $Distro) {
   # 〔待實機驗證〕部分版本的 --no-launch 不會註冊發行版，需要先啟動一次
   Warn "還看不到 $Distro。請在開始功能表打開「Ubuntu 24.04」完成第一次設定（建立帳號），關掉視窗後再執行一次本腳本。"
-  exit 0
+  exit 2      # 2＝需要人手動完成一個步驟後重跑
 }
 Ok "$Distro 已安裝。"
 
@@ -225,7 +228,9 @@ echo "copied to `$DST"
 # =============================================================================
 Step "第 7 步：在 WSL 裡執行 install.sh"
 # =============================================================================
-Info "接下來是 Linux 安裝器的互動畫面。Docker 請選「還沒裝 → 自動安裝」（開源 Docker Engine）。"
+if ($InstallArgs -notmatch '--yes') {
+  Info "接下來是 Linux 安裝器的互動畫面。Docker 請選「還沒裝 → 自動安裝」（開源 Docker Engine）。"
+}
 Info "模型建議選「指向現有模型服務」，填 DGX 的位址；這台主機沒有 GPU，本機跑模型會很慢。"
 $cmd = "cd $LinuxDir && ./install.sh $InstallArgs"
 & wsl.exe --distribution $Distro --user root -- bash -lc $cmd

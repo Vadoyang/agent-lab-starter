@@ -34,11 +34,25 @@ NOTIFY = int(os.getenv("NOTIFY_THRESHOLD", "40"))
 app = FastAPI(title="soar")
 
 
+# V5 的「上班時間」要用當地時間判斷；Wazuh 告警的 timestamp 是 UTC（+0000）
+try:
+    from zoneinfo import ZoneInfo
+    LOCAL_TZ = ZoneInfo(os.getenv("SOAR_TZ", "Asia/Taipei"))
+except Exception:  # noqa: BLE001
+    LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=8))
+
+
 def _hour(ts: str) -> int:
     try:
-        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).hour
+        t = ts.replace("Z", "+00:00")
+        if len(t) > 5 and t[-5] in "+-" and t[-3] != ":":   # Wazuh 的 +0000 → +00:00
+            t = t[:-2] + ":" + t[-2:]
+        d = datetime.datetime.fromisoformat(t)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=datetime.timezone.utc)
+        return d.astimezone(LOCAL_TZ).hour
     except Exception:  # noqa: BLE001
-        return datetime.datetime.now().hour
+        return datetime.datetime.now(LOCAL_TZ).hour
 
 
 def history_count(agent_id: str) -> int:

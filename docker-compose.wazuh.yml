@@ -201,12 +201,16 @@ services:
       # Block 1：SOAR 動態存取控制——soar 用這把 admin token 呼叫 /revoke
       SOAR_ADMIN_TOKEN: ${SOAR_ADMIN_TOKEN:-change-me-soar-admin}
       REVOKE_PATH: /logs/revocations.json
+      # 護欄：toolproxy 代 Agent 呼叫護欄服務；開關狀態寫在 logs/guard-mode.json
+      GUARD_URL: http://guard:8000
+      GUARDRAILS_DEFAULT: ${GUARDRAILS_DEFAULT:-1}
     volumes:
       - ./wiki:/wiki:ro
       - ./logs:/logs
     networks: [agent_net, svc_net]
     depends_on:
       postgres: {condition: service_healthy}
+      guard: {condition: service_started}
     restart: unless-stopped
 
   soar:            # SOAR 決策層（Block 1）：收 Wazuh 告警 → 信心度評分 → AUTO_BLOCK 撤銷 token
@@ -234,6 +238,7 @@ services:
     command: uvicorn portal:app --host 0.0.0.0 --port 8080
     environment:
       PORTAL_PIN: ${PORTAL_PIN:-}
+      GUARDRAILS_DEFAULT: ${GUARDRAILS_DEFAULT:-1}
       GRAFANA_PORT: ${GRAFANA_PORT:-3000}
       WAZUH_DASHBOARD_PORT: ${WAZUH_DASHBOARD_PORT:-8443}
       SOAR_ADMIN_TOKEN: ${SOAR_ADMIN_TOKEN:-change-me-soar-admin}
@@ -249,7 +254,7 @@ services:
       - ./logs:/logs:ro
       - ./jobs:/jobs
     networks: [svc_net, ui_net]
-    depends_on: [toolproxy, soar]
+    depends_on: [toolproxy, soar, guard, llm-proxy]
     restart: unless-stopped
 
   runner-governed:   # 受治理 Agent 的執行器：設定與 agent-governed 相同，只在 agent_net
@@ -297,14 +302,33 @@ services:
       postgres: {condition: service_healthy}
     restart: unless-stopped
 
-  llm-proxy:       # 模型代理：受治理 Agent 只能經由這裡連到模型
-    image: nginx:1.27-alpine
+  llm-proxy:       # 模型代理（Agent → Ollama → LLM 的管制點）：模型白名單、禁雲端模型、每次呼叫留紀錄
+    build: ./app
+    command: uvicorn llmproxy:app --host 0.0.0.0 --port 8080
     environment:
       LLM_UPSTREAM: ${LLM_UPSTREAM}
+      MODEL: ${MODEL}
+      GUARD_MODEL: ${GUARD_MODEL:-}
+      LLM_ALLOWED_MODELS: ${LLM_ALLOWED_MODELS:-}
+      ES_URL: ""
     volumes:
-      - ./nginx/llm-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
-    networks: [agent_net, egress_net]
+      - ./logs:/logs
+    # svc_net：讓護欄服務的防護模型也經由這裡（同一套白名單與紀錄）
+    networks: [agent_net, svc_net, egress_net]
     extra_hosts: ["host.docker.internal:host-gateway"]
+    restart: unless-stopped
+
+  guard:           # 護欄服務（老師架構圖的兩個「護欄」）：只在 svc_net，Agent 連不到，只能經 Gateway 呼叫
+    build: ./app
+    command: uvicorn guard:app --host 0.0.0.0 --port 8000
+    environment:
+      GUARD_MODEL: ${GUARD_MODEL:-}
+      GUARD_LLM_URL: http://llm-proxy:8080/v1
+      LLM_API_KEY: ${LLM_API_KEY}
+      ES_URL: ""
+    volumes:
+      - ./logs:/logs
+    networks: [svc_net]
     restart: unless-stopped
 
   # ---------- Agent（用 docker compose run 執行，不常駐） ----------

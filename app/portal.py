@@ -38,7 +38,8 @@ WAZUH_PORT = os.getenv("WAZUH_DASHBOARD_PORT", "8443")
 SOAR_ADMIN_TOKEN = os.getenv("SOAR_ADMIN_TOKEN", "")
 TOOLPROXY_URL = os.getenv("TOOLPROXY_URL", "http://toolproxy:8000")
 TESTS_FILE = os.getenv("TESTS_FILE", "tests.yaml")
-STREAMS = ["agent-events", "toolproxy-decisions", "sink-hits", "approvals", "actions", "soar-decisions"]
+STREAMS = ["agent-events", "toolproxy-decisions", "sink-hits", "approvals", "actions", "soar-decisions",
+           "guard-decisions", "llm-calls"]
 TARGETS = ("governed", "baseline")
 JOB_ID = re.compile(r"^[0-9a-f]{16}$")
 TYPES = ("ask", "test", "checks")
@@ -86,7 +87,8 @@ def slim(stream: str, d: dict) -> dict:
     """事件流只送顯示需要的欄位，並截短長內容。"""
     keep = ("@timestamp", "trace_id", "mode", "type", "tool", "decision", "reason", "injection_suspected",
             "role", "path", "action", "ip", "executed", "agent_id", "score", "pep_action", "enforced",
-            "rule_id", "status", "end_reason", "step")
+            "rule_id", "status", "end_reason", "step", "stage", "direction", "guard_decision", "categories",
+            "engine", "model", "llm_decision", "caller", "guardrails")
     e = {k: d[k] for k in keep if k in d}
     for k in ("question", "answer"):
         if k in d:
@@ -154,18 +156,42 @@ async def status():
             probe_tcp("victim", 8080),
             probe_tcp("attacker-site", 8080),
             probe_tcp("threatintel", 8080),
+            probe_http(c, "http://guard:8000/health"),
+            probe_http(c, "http://llm-proxy:8080/health"),
         )
     ids = ["toolproxy", "soar", "indexer", "manager", "dashboard", "grafana",
-           "postgres", "victim", "attacker", "threatintel"]
+           "postgres", "victim", "attacker", "threatintel", "guard", "llm_proxy_svc"]
     comps = {i: {"ok": ok, "detail": det} for i, (ok, det) in zip(ids, checks)}
     gov, base = runner_state("governed"), runner_state("baseline")
     comps["runner_governed"] = {"ok": gov["alive"], "detail": "執行器在線" if gov["alive"] else "沒有心跳"}
     comps["runner_baseline"] = {"ok": base["alive"], "detail": "執行器在線" if base["alive"] else "沒有心跳"}
-    comps["llm_proxy"] = {"ok": gov["model_ok"], "detail": f"經 llm-proxy 連模型：{gov['detail'] or '未知'}"}
+    svc = comps.pop("llm_proxy_svc")
+    comps["llm_proxy"] = {"ok": svc["ok"] and gov["model_ok"],
+                          "detail": f"代理{'在線' if svc['ok'] else '離線'}；經代理連模型：{gov['detail'] or '未知'}"}
     comps["model"] = {"ok": gov["model_ok"] or base["model_ok"], "detail": gov.get("model") or base.get("model") or ""}
     revoked = (read_json(os.path.join(LOG_DIR, "revocations.json")) or {}).get("revoked", [])
     return {"components": comps, "runners": {"governed": gov, "baseline": base},
-            "revoked": revoked, "ts": time.time()}
+            "revoked": revoked, "guardrails": guardrails_state(), "ts": time.time()}
+
+
+def guardrails_state() -> bool | None:
+    st = read_json(os.path.join(LOG_DIR, "guard-mode.json"))
+    if st is None:
+        return os.getenv("GUARDRAILS_DEFAULT", "1") == "1"
+    return bool(st.get("enabled"))
+
+
+@app.post("/api/guardrails")
+def set_guardrails(body: dict = Body(default={}), x_portal_pin: str = Header(default="")):
+    """切換受治理 Agent 的護欄（經 Gateway 的 admin 介面）；用來做「有／無護欄」對照。"""
+    if (resp := need_pin(x_portal_pin)) is not None:
+        return resp
+    try:
+        r = httpx.post(f"{TOOLPROXY_URL}/guardrails", json={"enabled": bool(body.get("enabled", True))},
+                       headers={"X-Soar-Token": SOAR_ADMIN_TOKEN}, timeout=5)
+        return JSONResponse(r.json(), r.status_code)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"Gateway 無回應（{type(e).__name__}）"}, 502)
 
 
 # ---------------------------------------------------------------- 統計（Wazuh indexer）
@@ -243,6 +269,12 @@ def proof():
     })
     revs = [a for a in _read_stream("actions") if a.get("action") == "revoke_token" and a.get("executed")]
     res["governed"]["revocations"] = len(revs)
+    gd = _read_stream("guard-decisions")
+    res["governed"].update({
+        "guard_blocked": sum(1 for g in gd if g.get("guard_decision") == "block"),
+        "guard_redacted": sum(1 for g in gd if g.get("guard_decision") == "redact"),
+        "llm_denied": sum(1 for x in _read_stream("llm-calls") if x.get("llm_decision") == "deny"),
+    })
     return res
 
 

@@ -10,6 +10,8 @@
 #   ./lab.sh destroy   全部清除：連資料一起刪，回到乾淨狀態
 #   ./lab.sh status    看目前各容器狀態
 #   ./lab.sh logs      跟看日誌（Ctrl+C 離開）
+#   ./lab.sh verify    佈署驗收：逐項檢查並輸出證據（results/verify-latest.json）
+#   ./lab.sh verify --with-model   另外跑一次良性冒煙測試（需要模型在線）
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -35,7 +37,7 @@ ensure_certs() {
 # 會漏掉冷啟動後第一批事件（第一次實驗的告警可能為 0）。對 ELK 版為無害的多餘動作。
 ensure_logs() {
   mkdir -p logs results
-  for f in toolproxy-decisions agent-events sink-hits approvals actions soar-decisions; do
+  for f in toolproxy-decisions agent-events sink-hits approvals actions soar-decisions guard-decisions llm-calls; do
     [ -e "logs/$f.ndjson" ] || : > "logs/$f.ndjson"
   done
   # 入口網站與執行器之間的工作佇列（共享資料夾）
@@ -73,6 +75,64 @@ case "$CMD" in
     ;;
   status)
     compose ps
+    ;;
+  verify)
+    # 佈署驗收。主機層檢查在這裡做，環境層檢查在 portal 容器內做（app/verify_env.py），合併成一份 JSON。
+    set +e +o pipefail   # 驗收要跑完每一項，個別失敗只記錄、不中斷
+    mkdir -p results
+    TMP=$(mktemp)
+    add() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >> "$TMP"; }   # id 說明 required pass 證據
+    v=$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)
+    add B01 "Docker Engine 可用" 1 "$([ -n "$v" ] && echo 1 || echo 0)" "server=${v:-none}"
+    expected="attacker-site grafana guard llm-proxy portal postgres runner-baseline runner-governed soar threatintel toolproxy victim wazuh.dashboard wazuh.indexer wazuh.manager"
+    running=$(compose ps --status running --services 2>/dev/null | xargs)
+    missing=""; for svc in $expected; do echo " $running " | grep -q " $svc " || missing="$missing $svc"; done
+    add B02 "所有常駐容器都在執行" 1 "$([ -z "$missing" ] && echo 1 || echo 0)" "missing:${missing:- none}"
+    restarting=$(compose ps --status restarting --services 2>/dev/null | xargs)
+    add B03 "沒有反覆重啟的容器" 1 "$([ -z "$restarting" ] && echo 1 || echo 0)" "restarting:${restarting:- none}"
+    mmc=$(sysctl -n vm.max_map_count 2>/dev/null || echo 0)
+    persist=$(grep -rhs '^vm.max_map_count' /etc/sysctl.conf /etc/sysctl.d/ | tail -1)
+    add B04 "vm.max_map_count ≥ 262144 且重開機後仍生效" 1 "$([ "${mmc:-0}" -ge 262144 ] && [ -n "$persist" ] && echo 1 || echo 0)" "current=$mmc persisted=${persist:-no}"
+    freeg=$(df -BG --output=avail . | tail -1 | tr -dc 0-9)
+    add B05 "磁碟剩餘空間 ≥ 20 GB" 0 "$([ "${freeg:-0}" -ge 20 ] && echo 1 || echo 0)" "free=${freeg}G"
+    lt() { printf '%s\n' "$1" | compose exec -T wazuh.manager /var/ossec/bin/wazuh-logtest 2>&1 | grep -o "id: '[0-9]*'" | head -1 | tr -dc 0-9; }
+    r1=$(lt '{"trace_id":"verify","agent_id":"verify","tool":"x","decision":"deny","reason":"verify"}')
+    r2=$(lt '{"trace_id":"verify","agent_id":"verify","stage":"tool_args","direction":"out","tool":"x","guard_decision":"block","categories":"dlp"}')
+    r3=$(lt '{"trace_id":"verify","caller":"verify","model":"x-cloud","llm_decision":"deny","reason":"verify"}')
+    add B06 "Wazuh 已載入自訂規則（logtest：閘道拒絕→100901、護欄擋外送→100910、模型代理拒絕→100911）" 1 \
+      "$([ "$r1" = 100901 ] && [ "$r2" = 100910 ] && [ "$r3" = 100911 ] && echo 1 || echo 0)" "got=${r1:-none},${r2:-none},${r3:-none}"
+    weak=$(grep -E '^(AGENT_TOKEN_SOC01|SOAR_ADMIN_TOKEN|DB_RO_PASSWORD|PORTAL_PIN)=(change-me.*|)$' .env 2>/dev/null | cut -d= -f1 | tr '\n' ' ')
+    add B07 ".env 的憑證、token 與 PIN 已改成亂數（不顯示內容）" 1 "$([ -z "$weak" ] && echo 1 || echo 0)" "weak:${weak:- none}"
+    vd=$(grep -A2 '<vulnerability-detection>' config/wazuh_cluster/wazuh_manager.conf | grep -c '<enabled>no</enabled>')
+    add B08 "Wazuh 弱點偵測已關閉（避免吃掉約 20 GB 磁碟）" 0 "$([ "$vd" -ge 1 ] && echo 1 || echo 0)" "disabled=$vd"
+    ENVJSON=$(compose exec -T portal python verify_env.py "${@:2}" 2>/dev/null | tail -1)
+    TS=$(date +%Y%m%d-%H%M%S)
+    python3 - "$TMP" "$ENVJSON" "results/verify-$TS.json" <<'PYEOF'
+import json, sys, datetime
+tmp, envjson, out = sys.argv[1], sys.argv[2], sys.argv[3]
+rows = []
+for line in open(tmp, encoding="utf-8"):
+    cid, desc, req, ok, ev = (line.rstrip("\n").split("\t") + [""] * 5)[:5]
+    rows.append({"id": cid, "desc": desc, "required": req == "1", "result": "pass" if ok == "1" else "fail", "evidence": ev})
+try:
+    rows += json.loads(envjson)
+except Exception:
+    rows.append({"id": "C00", "desc": "portal 容器內的環境檢查可執行", "required": True, "result": "fail",
+                 "evidence": (envjson or "沒有輸出")[:300]})
+failed = [r["id"] for r in rows if r["required"] and r["result"] != "pass"]
+report = {"generated": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+          "overall": "PASS" if not failed else "FAIL", "failed_required": failed, "checks": rows}
+for p in (out, "results/verify-latest.json"):
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+mark = {"pass": "PASS", "fail": "FAIL", "skip": "SKIP"}
+for r in rows:
+    print(f"[{mark[r['result']]}] {r['id']} {'*' if r['required'] else ' '} {r['desc']}")
+print(f"\n整體：{report['overall']}（* 為必要項）　未通過的必要項：{', '.join(failed) or '無'}")
+print(f"證據檔：{out}（同時寫入 results/verify-latest.json）")
+sys.exit(0 if not failed else 1)
+PYEOF
+    rc=$?; rm -f "$TMP"; exit $rc
     ;;
   logs)
     compose logs -f --tail=50

@@ -247,6 +247,20 @@ def execute_tool(name: str, args: dict, trace_id: str, step: int) -> dict:
     return result
 
 
+# ---------- 護欄（governed）：任務與最終回答經 Gateway 轉給護欄服務 ----------
+def gateway_guard(stage: str, text: str, trace_id: str) -> dict:
+    """失敗即拒絕：Gateway 連不上時，任務不執行、回答不輸出。"""
+    try:
+        r = httpx.post(f"{TOOLPROXY_URL}/guard/{stage}", json={"text": text}, timeout=90,
+                       headers={"Authorization": f"Bearer {AGENT_TOKEN}", "X-Trace-Id": trace_id})
+        if r.status_code < 300:
+            return r.json()
+        return {"decision": "block", "text": None, "reason": f"Gateway HTTP {r.status_code}", "guardrails": True}
+    except Exception as e:  # noqa: BLE001
+        return {"decision": "block", "text": None, "reason": f"Gateway 無回應（{type(e).__name__}）",
+                "guardrails": True}
+
+
 def wrap_result(name: str, result: dict) -> str:
     text = json.dumps(result, ensure_ascii=False)
     if HARDEN_PROMPT:  # 標記為不受信任的資料（spotlighting）
@@ -255,6 +269,9 @@ def wrap_result(name: str, result: dict) -> str:
 
 
 # ---------- 呼叫模型（OpenAI 相容 API；Ollama、vLLM 皆可） ----------
+_trace: dict = {}   # 目前任務的 trace_id（帶給 llm-proxy 記錄用）
+
+
 class LLMError(Exception):
     def __init__(self, status: int, text: str):
         super().__init__(f"LLM API 錯誤 {status}: {text}")
@@ -267,7 +284,8 @@ def llm_chat(messages: list[dict], use_tools: bool) -> dict:
     if use_tools:
         payload["tools"] = TOOLS
     r = httpx.post(f"{LLM_BASE_URL}/chat/completions", json=payload, timeout=LLM_TIMEOUT,
-                   headers={"Authorization": f"Bearer {LLM_API_KEY}"})
+                   headers={"Authorization": f"Bearer {LLM_API_KEY}", "X-Trace-Id": _trace.get("id", ""),
+                            "X-Caller": f"agent-{MODE}"})
     if r.status_code >= 400:
         raise LLMError(r.status_code, r.text[:500])
     return r.json()["choices"][0]["message"]
@@ -325,18 +343,39 @@ def json_protocol_prompt() -> str:
 # ---------- Agent 主迴圈 ----------
 def run(question: str, trace_id: str | None = None) -> dict:
     trace_id = trace_id or uuid.uuid4().hex[:16]
+    _trace["id"] = trace_id
     use_native = TOOL_MODE in ("auto", "native")
     system = build_system_prompt() + ("" if use_native else json_protocol_prompt())
     messages = [{"role": "system", "content": system}, {"role": "user", "content": question}]
     emit({"type": "question", "trace_id": trace_id, "question": question, "tool_mode": TOOL_MODE})
     tool_calls: list[dict] = []
     t_start = time.time()
+    guard: dict = {}
 
     def finish(answer: str, reason: str) -> dict:
+        # 輸出護欄：最終回答離開 Agent runtime 前由 Gateway 送護欄檢查（只有 governed 有）
+        if MODE == "governed" and reason != "guard_blocked_task":
+            g = gateway_guard("answer", answer, trace_id)
+            guard["answer"] = {k: g.get(k) for k in ("decision", "findings", "engine", "reason")}
+            guard["enabled"] = bool(g.get("guardrails"))
+            if g.get("decision") == "block" or g.get("text") is None:
+                answer = f"（護欄未能完成檢查，回答不予輸出：{g.get('reason') or '未知原因'}）"
+            else:
+                answer = g["text"]
         emit({"type": "answer", "trace_id": trace_id, "answer": answer, "end_reason": reason,
-              "n_tool_calls": len(tool_calls), "latency_ms": int((time.time() - t_start) * 1000)})
+              "n_tool_calls": len(tool_calls), "latency_ms": int((time.time() - t_start) * 1000),
+              "guardrails": guard.get("enabled")})
         return {"trace_id": trace_id, "answer": answer, "tool_calls": tool_calls, "end_reason": reason,
-                "latency_s": round(time.time() - t_start, 1)}
+                "latency_s": round(time.time() - t_start, 1), "guard": guard}
+
+    # 輸入護欄：任務本身先檢查（只有 governed 有）
+    if MODE == "governed":
+        g = gateway_guard("task", question, trace_id)
+        guard["task"] = {k: g.get(k) for k in ("decision", "findings", "engine", "reason")}
+        guard["enabled"] = bool(g.get("guardrails"))
+        if g.get("decision") == "block":
+            why = g.get("reason") or "護欄判定任務疑似夾帶操控 AI 的指令"
+            return finish(f"（任務未交給 Agent 執行：{why}）", "guard_blocked_task")
 
     for step in range(1, MAX_STEPS + 1):
         try:

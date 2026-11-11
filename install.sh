@@ -16,6 +16,8 @@
 #   ./install.sh --ollama install        指定：在本機安裝 Ollama 並拉模型
 #   ./install.sh --ollama point          指定：指向現有模型服務
 #   ./install.sh --model gemma4:31b --model-url http://192.168.1.50:11434
+#   ./install.sh --guard-model <模型名稱>   護欄另用本地防護模型判斷注入（選用；預設只用規則）
+#   ./install.sh --host-ip 192.168.1.20      指定瀏覽器要連的主機 IP（不指定則自動偵測）
 #
 # 解除安裝 / 收起：見 ./uninstall.sh 與 ./lab.sh down / destroy
 # =============================================================================
@@ -29,6 +31,8 @@ OPT_DOCKER=""      # have | install
 OPT_OLLAMA=""      # point | install
 OPT_MODEL=""
 OPT_MODEL_URL=""
+OPT_GUARD_MODEL=""
+OPT_HOST_IP=""
 USE_COLOR=1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -37,6 +41,8 @@ while [ $# -gt 0 ]; do
     --ollama) OPT_OLLAMA="${2:-}"; shift ;;
     --model) OPT_MODEL="${2:-}"; shift ;;
     --model-url) OPT_MODEL_URL="${2:-}"; shift ;;
+    --guard-model) OPT_GUARD_MODEL="${2:-}"; shift ;;
+    --host-ip) OPT_HOST_IP="${2:-}"; shift ;;
     --no-color) USE_COLOR=0 ;;
     -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "未知參數：$1（--help 看用法）"; exit 1 ;;
@@ -206,6 +212,7 @@ if [ "$OLLAMA_MODE" = "point" ]; then
   info "  · 模型在「另一台」（例如 DGX）→ 填 http://<該台IP>:11434（結尾不要加斜線或 /v1）"
   LLM_UPSTREAM=$(ask_val "模型服務位址 LLM_UPSTREAM" "$DEF_URL")
   MODEL=$(ask_val "模型名稱 MODEL（需支援 tool calling）" "$DEF_MODEL")
+  warn "請在模型主機上設定 OLLAMA_NO_CLOUD=1 並重啟 Ollama（停用雲端模型，避免提示被送出本機）。"
 else
   # 本機安裝 Ollama
   warn "將在這台機器安裝 Ollama 並下載模型；模型可能數 GB 到數十 GB，請確認磁碟與網路。"
@@ -224,12 +231,13 @@ else
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q '^ollama.service'; then
     info "設定 Ollama 對外監聽（OLLAMA_HOST=0.0.0.0）…"
     $SUDO mkdir -p /etc/systemd/system/ollama.service.d
-    printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\n' | $SUDO tee /etc/systemd/system/ollama.service.d/override.conf >/dev/null
+    # OLLAMA_NO_CLOUD=1：停用 Ollama 雲端模型（雲端模型會把提示送到 Ollama 的伺服器＝資料外送）
+    printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\nEnvironment="OLLAMA_NO_CLOUD=1"\n' | $SUDO tee /etc/systemd/system/ollama.service.d/override.conf >/dev/null
     $SUDO systemctl daemon-reload && $SUDO systemctl restart ollama && ok "Ollama 已設定對外監聽。" || warn "重啟 Ollama 失敗，稍後請手動確認。"
   else
     warn "偵測不到 systemd 管理的 ollama 服務；請自行確認 Ollama 以 OLLAMA_HOST=0.0.0.0 啟動，容器才連得到。"
     $SUDO pkill -x ollama 2>/dev/null || true
-    OLLAMA_HOST=0.0.0.0:11434 nohup ollama serve >/tmp/ollama.log 2>&1 &
+    OLLAMA_HOST=0.0.0.0:11434 OLLAMA_NO_CLOUD=1 nohup ollama serve >/tmp/ollama.log 2>&1 &
     sleep 3
   fi
   info "下載模型 $MODEL（可能要一段時間）…"
@@ -254,7 +262,8 @@ fi
 
 DETECT_IP=$(hostname -I 2>/dev/null | awk '{print $1}'); [ -z "$DETECT_IP" ] && DETECT_IP="127.0.0.1"
 if [ "$SKIP_ENV" = 0 ]; then
-  HOST_IP=$(ask_val "這台主機對外的 IP（給你用瀏覽器連戰情室）" "$DETECT_IP")
+  if [ -n "$OPT_HOST_IP" ]; then HOST_IP="$OPT_HOST_IP"
+  else HOST_IP=$(ask_val "這台主機對外的 IP（給你用瀏覽器連戰情室）" "$DETECT_IP"); fi
   AGENT_TOKEN=$(rand_hex); DB_RO=$(rand_hex); SOAR_TOKEN=$(rand_hex)
   PORTAL_PIN=$(printf '%06d' $(( $(od -An -N4 -tu4 /dev/urandom | tr -d ' ') % 1000000 )))
   ok "已自動產生受治理 Agent 憑證、資料庫唯讀密碼、SOAR admin token、入口網站操作 PIN（亂數）。"
@@ -266,6 +275,7 @@ if [ "$SKIP_ENV" = 0 ]; then
     -e "s#^DB_RO_PASSWORD=.*#DB_RO_PASSWORD=${DB_RO}#" \
     -e "s#^SOAR_ADMIN_TOKEN=.*#SOAR_ADMIN_TOKEN=${SOAR_TOKEN}#" \
     -e "s#^PORTAL_PIN=.*#PORTAL_PIN=${PORTAL_PIN}#" \
+    -e "s#^GUARD_MODEL=.*#GUARD_MODEL=${OPT_GUARD_MODEL}#" \
     -e "s@^# COMPOSE_FILE=docker-compose.wazuh.yml@COMPOSE_FILE=docker-compose.wazuh.yml@" \
     .env
   grep -q "^COMPOSE_FILE=docker-compose.wazuh.yml" .env || echo "COMPOSE_FILE=docker-compose.wazuh.yml" >> .env
