@@ -35,8 +35,12 @@ ensure_certs() {
 # 會漏掉冷啟動後第一批事件（第一次實驗的告警可能為 0）。對 ELK 版為無害的多餘動作。
 ensure_logs() {
   mkdir -p logs results
-  for f in toolproxy-decisions agent-events sink-hits approvals actions; do
+  for f in toolproxy-decisions agent-events sink-hits approvals actions soar-decisions; do
     [ -e "logs/$f.ndjson" ] || : > "logs/$f.ndjson"
+  done
+  # 入口網站與執行器之間的工作佇列（共享資料夾）
+  for t in governed baseline; do
+    mkdir -p "jobs/$t/pending" "jobs/$t/running" "jobs/$t/done"
   done
 }
 

@@ -188,7 +188,16 @@ if [ -z "$OLLAMA_MODE" ]; then
   [ "$sel" = 1 ] && OLLAMA_MODE="point" || OLLAMA_MODE="install"
 fi
 
-DEF_MODEL="${OPT_MODEL:-gemma4:31b}"
+# 預設模型：指向 DGX 等 GPU 主機時用大模型；在沒有 NVIDIA GPU 的機器本機安裝時改用 8B 小模型
+HAS_GPU=0
+command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1 && HAS_GPU=1
+if [ -n "$OPT_MODEL" ]; then
+  DEF_MODEL="$OPT_MODEL"
+elif [ "$OLLAMA_MODE" = "install" ] && [ "$HAS_GPU" = 0 ]; then
+  DEF_MODEL="qwen3:8b"
+else
+  DEF_MODEL="gemma4:31b"
+fi
 if [ "$OLLAMA_MODE" = "point" ]; then
   DEF_URL="${OPT_MODEL_URL:-http://host.docker.internal:11434}"
   echo
@@ -200,6 +209,10 @@ if [ "$OLLAMA_MODE" = "point" ]; then
 else
   # 本機安裝 Ollama
   warn "將在這台機器安裝 Ollama 並下載模型；模型可能數 GB 到數十 GB，請確認磁碟與網路。"
+  if [ "$HAS_GPU" = 0 ]; then
+    warn "這台機器偵測不到 NVIDIA GPU，模型只能用 CPU 跑：預設改用 qwen3:8b，每題回答可能要數十秒到數分鐘。"
+    warn "要在媒體或會議展示，建議改用「指向現有模型服務」，讓模型跑在 DGX 上。"
+  fi
   MODEL=$(ask_val "要下載哪個模型？（需支援 tool calling；大模型如 gemma4:31b 需要較好的 GPU）" "$DEF_MODEL")
   if command -v ollama >/dev/null 2>&1; then
     ok "已偵測到 Ollama，略過安裝。"
@@ -243,7 +256,8 @@ DETECT_IP=$(hostname -I 2>/dev/null | awk '{print $1}'); [ -z "$DETECT_IP" ] && 
 if [ "$SKIP_ENV" = 0 ]; then
   HOST_IP=$(ask_val "這台主機對外的 IP（給你用瀏覽器連戰情室）" "$DETECT_IP")
   AGENT_TOKEN=$(rand_hex); DB_RO=$(rand_hex); SOAR_TOKEN=$(rand_hex)
-  ok "已自動產生受治理 Agent 憑證、資料庫唯讀密碼、SOAR admin token（亂數）。"
+  PORTAL_PIN=$(printf '%06d' $(( $(od -An -N4 -tu4 /dev/urandom | tr -d ' ') % 1000000 )))
+  ok "已自動產生受治理 Agent 憑證、資料庫唯讀密碼、SOAR admin token、入口網站操作 PIN（亂數）。"
   cp .env.example .env
   sed -i \
     -e "s#^LLM_UPSTREAM=.*#LLM_UPSTREAM=${LLM_UPSTREAM}#" \
@@ -251,6 +265,7 @@ if [ "$SKIP_ENV" = 0 ]; then
     -e "s#^AGENT_TOKEN_SOC01=.*#AGENT_TOKEN_SOC01=${AGENT_TOKEN}#" \
     -e "s#^DB_RO_PASSWORD=.*#DB_RO_PASSWORD=${DB_RO}#" \
     -e "s#^SOAR_ADMIN_TOKEN=.*#SOAR_ADMIN_TOKEN=${SOAR_TOKEN}#" \
+    -e "s#^PORTAL_PIN=.*#PORTAL_PIN=${PORTAL_PIN}#" \
     -e "s@^# COMPOSE_FILE=docker-compose.wazuh.yml@COMPOSE_FILE=docker-compose.wazuh.yml@" \
     .env
   grep -q "^COMPOSE_FILE=docker-compose.wazuh.yml" .env || echo "COMPOSE_FILE=docker-compose.wazuh.yml" >> .env
@@ -281,10 +296,13 @@ step "安裝完成"
 # =============================================================================
 echo -e "${c_g}環境已佈署。用瀏覽器打開：${c_0}"
 echo
+PORTAL_PORT_SHOW="$(grep -E '^PORTAL_PORT=' .env 2>/dev/null | cut -d= -f2-)"
+PIN_SHOW="$(grep -E '^PORTAL_PIN=' .env 2>/dev/null | cut -d= -f2-)"
+echo -e "  ${c_c}入口網站（從這裡開始）${c_0}  http://${HOST_IP}:${PORTAL_PORT_SHOW:-8080}     操作 PIN：${PIN_SHOW:-（未設定）}"
 echo -e "  ${c_c}戰情室（展示大螢幕）${c_0}  http://${HOST_IP}:3000     帳密 admin / agentlab"
 echo -e "  ${c_c}Wazuh 技術細節${c_0}        https://${HOST_IP}:8443    帳密 admin / SecretPassword（自簽憑證，按「繼續」）"
 echo
-echo -e "${c_y}跑一次對照實驗：${c_0}"
+echo -e "${c_y}在入口網站按「同時問兩個 Agent」即可對照；也可以用指令列：${c_0}"
 echo "  docker compose run --rm agent-baseline python agent.py \"公司目前共有幾位員工？\"   # 未治理"
 echo "  docker compose run --rm agent-governed python agent.py \"公司目前共有幾位員工？\"   # 受治理"
 echo "  docker compose run --rm agent-governed python run_tests.py --repeat 5              # 整份考卷"

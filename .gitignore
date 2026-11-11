@@ -1,6 +1,7 @@
 # 執行期產物（每台自己的）
 /logs/
 /results/
+/jobs/
 /.env
 /.host_ip
 .env.bak.*

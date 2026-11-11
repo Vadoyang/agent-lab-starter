@@ -117,6 +117,10 @@ services:
       INDEXER_USER: admin
       INDEXER_PASS: SecretPassword
       INDEXER_OS_VERSION: ${INDEXER_OS_VERSION:-2.19.1}
+      # 讓入口網站可以內嵌戰情室；匿名者只有檢視權限（展示用，不能改儀表板）
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     ports:
       - "${GRAFANA_PORT:-3000}:3000"
     volumes:
@@ -220,6 +224,77 @@ services:
       - ./logs:/logs
     networks: [svc_net]
     depends_on: [toolproxy]
+    restart: unless-stopped
+
+  # ---------- 入口網站與 Agent 執行器 ----------
+  # portal 是操作員主控台：讀健康狀態、告警與紀錄，把實驗工作放進共享資料夾 ./jobs。
+  # 兩個 runner 各自從自己的資料夾取工作執行。portal 與受治理 Agent 之間沒有任何網路連線。
+  portal:
+    build: ./app
+    command: uvicorn portal:app --host 0.0.0.0 --port 8080
+    environment:
+      PORTAL_PIN: ${PORTAL_PIN:-}
+      GRAFANA_PORT: ${GRAFANA_PORT:-3000}
+      WAZUH_DASHBOARD_PORT: ${WAZUH_DASHBOARD_PORT:-8443}
+      SOAR_ADMIN_TOKEN: ${SOAR_ADMIN_TOKEN:-change-me-soar-admin}
+      TOOLPROXY_URL: http://toolproxy:8000
+      ES_URL: ""
+      INDEXER_URL: https://wazuh.indexer:9200
+      INDEXER_USER: admin
+      INDEXER_PASS: SecretPassword
+      INDEXER_VERIFY: "false"
+    ports:
+      - "${PORTAL_PORT:-8080}:8080"
+    volumes:
+      - ./logs:/logs:ro
+      - ./jobs:/jobs
+    networks: [svc_net, ui_net]
+    depends_on: [toolproxy, soar]
+    restart: unless-stopped
+
+  runner-governed:   # 受治理 Agent 的執行器：設定與 agent-governed 相同，只在 agent_net
+    build: ./app
+    command: python runner.py
+    environment:
+      MODE: governed
+      LLM_BASE_URL: http://llm-proxy:8080/v1
+      LLM_API_KEY: ${LLM_API_KEY}
+      MODEL: ${MODEL}
+      TOOLPROXY_URL: http://toolproxy:8000
+      AGENT_TOKEN: ${AGENT_TOKEN_SOC01}
+      ES_URL: ""
+    volumes:
+      - ./jobs/governed:/jobs
+      - ./logs:/logs
+    networks: [agent_net]
+    depends_on: [toolproxy, llm-proxy]
+    restart: unless-stopped
+
+  runner-baseline:   # 未治理 Agent 的執行器：設定與 agent-baseline 相同
+    build: ./app
+    command: python runner.py
+    environment:
+      MODE: baseline
+      LLM_BASE_URL: ${LLM_UPSTREAM}/v1
+      LLM_API_KEY: ${LLM_API_KEY}
+      MODEL: ${MODEL}
+      DB_ADMIN_DSN: "host=postgres dbname=corp user=app_admin password=${DB_ADMIN_PASSWORD}"
+      DB_ADMIN_PASSWORD: ${DB_ADMIN_PASSWORD}
+      SYSTEM_FLAG: ${SYSTEM_FLAG}
+      ES_URL: ""
+      INDEXER_URL: https://wazuh.indexer:9200
+      INDEXER_USER: admin
+      INDEXER_PASS: SecretPassword
+      INDEXER_VERIFY: "false"
+      WIKI_DIR: /wiki
+    volumes:
+      - ./wiki:/wiki:ro
+      - ./jobs/baseline:/jobs
+      - ./logs:/logs
+    networks: [svc_net, egress_net]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      postgres: {condition: service_healthy}
     restart: unless-stopped
 
   llm-proxy:       # 模型代理：受治理 Agent 只能經由這裡連到模型

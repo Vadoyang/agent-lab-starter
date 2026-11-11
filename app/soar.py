@@ -23,7 +23,7 @@ import httpx
 from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
-from common import indexer_request, log_event
+from common import indexer_request, log_event, read_events
 
 TOOLPROXY_URL = os.getenv("TOOLPROXY_URL", "http://toolproxy:8000").rstrip("/")
 SOAR_ADMIN_TOKEN = os.getenv("SOAR_ADMIN_TOKEN", "")
@@ -58,6 +58,31 @@ def history_count(agent_id: str) -> int:
         return 0
 
 
+def resolve_identity(data: dict) -> str | None:
+    """找出「這筆告警是哪個受治理身分造成的」。只有經過治理閘道（PEP）的 Agent 才有身分可撤銷。
+
+    1. 告警本身帶 agent_id（toolproxy 決策紀錄）→ 直接用
+    2. 沒有的話，用 trace_id 回查 toolproxy 決策紀錄，找同一次任務的 agent_id
+    3. 都找不到（例如未治理的 baseline Agent，它根本不經過 PEP）→ None，不撤銷任何人
+    注意：sink-hits 的 role 是 victim/attacker，不是身分，不能拿來撤銷。
+    """
+    def real(v) -> str | None:
+        # Wazuh 會把 JSON 的 null 解成字串 "null"（例如偽造憑證被拒的紀錄沒有身分）
+        s = str(v).strip() if v is not None else ""
+        return None if s.lower() in ("", "null", "none") else s
+
+    if data.get("mode") == "baseline":
+        return None
+    if real(data.get("agent_id")):
+        return real(data.get("agent_id"))
+    trace = real(data.get("trace_id"))
+    if trace:
+        for e in read_events("toolproxy-decisions", trace):
+            if real(e.get("agent_id")):
+                return real(e.get("agent_id"))
+    return None
+
+
 def score_alert(alert: dict) -> dict:
     """依 V1–V5 計算信心度評分；回傳 score/action/evidence（格式對齊框架 v1.1）。"""
     rule = alert.get("rule", {})
@@ -65,7 +90,7 @@ def score_alert(alert: dict) -> dict:
     level = int(rule.get("level", 0) or 0)
     groups = rule.get("groups", []) or []
     gset = set(groups)
-    agent_id = data.get("agent_id") or data.get("role") or "soc-agent-01"
+    agent_id = resolve_identity(data)
     ts = alert.get("timestamp") or data.get("@timestamp") or datetime.datetime.now().isoformat()
 
     score = 0
@@ -92,7 +117,7 @@ def score_alert(alert: dict) -> dict:
         evidence.append("[ +0] V2 no high-risk behavior tag  ← rule.groups")
 
     # V3 歷史持續性 ← Wazuh indexer（24h 同 agent 告警數）
-    hist = history_count(agent_id)
+    hist = history_count(agent_id or "")
     if hist >= 20:
         score += 20; evidence.append(f"[+20] V3 {hist} alerts/24h (persistent)  ← Wazuh indexer")
     elif hist >= 5:
@@ -118,6 +143,14 @@ def score_alert(alert: dict) -> dict:
 def enforce(decision: dict) -> dict:
     """依決策執行 PEP 動作。第一階段：AUTO_BLOCK → 撤銷 toolproxy 的 agent token。"""
     action, agent_id = decision["action"], decision["agent_id"]
+    if action in ("AUTO_BLOCK", "NOTIFY_SOC") and not agent_id:
+        # 判定要處置，但違規的是未經治理閘道的 Agent：沒有 PEP、沒有身分，SOC 無法把它斷線。
+        # 這正是「未治理」的風險所在，記錄下來供戰情室與入口網站呈現。
+        log_event("actions", {"action": "contain_failed", "executed": False, "mode": "soar",
+                              "score": decision["score"], "rule_id": decision.get("rule_id"),
+                              "reason": "未治理 Agent 未經 PEP，無可撤銷的身分"})
+        return {"enforced": False, "pep_action": "unenforceable",
+                "detail": "未治理 Agent 未經 PEP，無可撤銷的身分"}
     if action == "AUTO_BLOCK":
         enforced, detail = False, ""
         try:
@@ -128,9 +161,8 @@ def enforce(decision: dict) -> dict:
             detail = r.text[:200]
         except Exception as e:  # noqa: BLE001
             detail = f"{type(e).__name__}: {e}"[:200]
-        log_event("actions", {"action": "revoke_token", "agent_id": agent_id,
-                              "executed": enforced, "mode": "soar", "score": decision["score"],
-                              "rule_id": decision.get("rule_id")})
+        # 撤銷事件由 toolproxy /revoke 記錄一次即可（避免同一次撤銷被計兩次）；
+        # 評分與證據完整寫在 soar-decisions。
         return {"enforced": enforced, "pep_action": "revoke_token", "detail": detail}
     if action == "NOTIFY_SOC":
         log_event("approvals", {"request_id": os.urandom(4).hex(), "action": "soar_review",
@@ -140,7 +172,7 @@ def enforce(decision: dict) -> dict:
 
 
 # 只對「偵測類」告警評分；soar 自己的動作/基底/核准事件不回饋評分（避免迴圈與雜訊）
-SKIP_GROUPS = {"agentlab_event", "agentlab_action", "agentlab_approval"}
+SKIP_GROUPS = {"agentlab_event", "agentlab_action", "agentlab_approval", "agentlab_response"}
 
 
 @app.post("/webhook")

@@ -1,0 +1,8 @@
+# Linux 端執行的檔案一律 LF（Windows 上 git clone 時不要轉成 CRLF，否則腳本會壞）
+* text=auto eol=lf
+config/wazuh_integrations/custom-soar text eol=lf
+# Windows PowerShell 腳本用 CRLF
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary
+*.zip binary

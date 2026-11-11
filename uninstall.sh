@@ -78,7 +78,7 @@ do_full(){
   proj_volumes | xargs -r docker volume rm -f 2>/dev/null || true
   info "移除本專案自建映像…"
   built_images | xargs -r docker rmi -f 2>/dev/null || true
-  rm -rf logs results 2>/dev/null || sudo rm -rf logs results 2>/dev/null || true
+  rm -rf logs results jobs 2>/dev/null || sudo rm -rf logs results jobs 2>/dev/null || true
   ok "Full 清除完成：回到乾淨狀態（設定 .env 與憑證仍保留）。"
 }
 
