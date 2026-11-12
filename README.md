@@ -15,9 +15,32 @@
 
 ---
 
-## 快速開始：一鍵安裝
+## 快速開始：一行指令安裝（自動從 GitHub 下載）
 
-### Windows 11 Pro（WSL2＋開源 Docker Engine）
+**Windows 11 Pro**：在開始按鈕按右鍵 →「終端機（系統管理員）」，貼上這一行後按 Enter：
+
+```powershell
+irm https://raw.githubusercontent.com/Vadoyang/agent-lab-starter/main/get.ps1 | iex
+```
+
+它會把安裝包下載到 `C:\agentlab\agent-lab-starter`，接著執行 `install-windows.ps1`，過程中用中文問你 Docker 與模型服務。
+第一次會要求重新開機；開機後再貼一次同一行即可接著裝。之後要更新，也是再貼一次同一行（保留設定、紀錄與憑證）。
+模型放在 DGX 時可以直接帶參數，省掉問答：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Vadoyang/agent-lab-starter/main/get.ps1))) -InstallArgs '--ollama point --model-url http://<DGX的IP>:11434'
+```
+
+**Linux（Ubuntu／Debian）**：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Vadoyang/agent-lab-starter/main/get.sh | bash
+```
+
+新手完整步驟（建立 GitHub repo、讓 ChatGPT 自動佈署與修正安裝包）見 **[`docs/新手操作手冊_GitHub與ChatGPT佈署_v1.md`](docs/新手操作手冊_GitHub與ChatGPT佈署_v1.md)**。
+每個 PR 會由 `.github/workflows/pr-check.yml` 自動檢查語法與修改範圍。
+
+### Windows 11 Pro：已下載資料夾時（WSL2＋開源 Docker Engine）
 
 以**系統管理員身分**開啟 PowerShell，進到本資料夾：
 
@@ -38,7 +61,8 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 
 **交給 ChatGPT（Codex）全自動佈署**：Codex 依根目錄 `AGENTS.md` 的規則執行 `deploy/codex/RUNBOOK.md`，
 遇到錯誤時自己跑診斷、自動修復、查 `deploy/codex/TROUBLESHOOTING.md` 的代碼表處理，只在需要重新開機、要刪資料、
-或安全控制未通過時停下來問人。要貼給 Codex 的指令在 `deploy/codex/PROMPT.md`。
+或安全控制未通過時停下來問人。若修正了佈署腳本，Codex 會開 `codex/fix-…` 分支並送 PR，由你在 GitHub 上審核合併，安裝包因此持續變好。
+Codex 要在 `git clone` 下來的資料夾工作（不是 zip），修正才送得回 GitHub。要貼給 Codex 的指令在 `deploy/codex/PROMPT.md`。
 
 ### Linux
 
@@ -149,12 +173,14 @@ docker compose run --rm agent-governed python run_tests.py --checks             
 
 | 路徑 | 內容 |
 |---|---|
+| `get.ps1`、`get.sh` | 一行指令安裝：從 GitHub 下載安裝包再執行安裝器；重跑即更新（`get.ps1` 須維持純 ASCII、無 BOM） |
 | `install.sh` | 一鍵安裝器（Docker 兩選項、Ollama 兩選項、佈署、印網址） |
 | `install-windows.ps1` | Windows 11 安裝器（WSL2＋Ubuntu＋防火牆＋常駐，最後執行 install.sh） |
 | `verify-windows.ps1` | Windows 端佈署前檢查（Pre）與佈署後驗收（Post），每個未通過項目附修法代碼 |
 | `repair-windows.ps1` | Windows 端診斷（`-Diagnose`）與自癒迴圈（`-Auto`／`-Fix <代碼>`） |
 | `tools/agentlab_doctor.py` | WSL 端診斷與自動修復（`./lab.sh diagnose`／`repair`），已知問題知識庫 |
 | `AGENTS.md`、`deploy/codex/` | 交給 ChatGPT（Codex）全自動佈署：工作規則、分階段步驟、疑難排解代碼表、貼上用的指令 |
+| `.github/workflows/pr-check.yml` | 每個 PR 自動檢查語法、`get.ps1` 編碼，以及 Codex 分支只改了允許的佈署檔 |
 | `uninstall.sh` | 解除安裝 / 清除（soft／full 選單） |
 | `lab.sh` | 日常管理 up／seed／down／destroy／verify／diagnose／repair／update |
 | `docker-compose.wazuh.yml` | Wazuh 版全部元件與網路隔離 |

@@ -1,0 +1,51 @@
+# 每個 PR（包括 Codex 送來的修正）自動檢查：語法、get.ps1 編碼，以及 codex/ 分支只改了允許的佈署檔。
+# 結果顯示在 PR 頁面：綠色勾勾＝通過；紅色叉叉＝不要合併，點 Details 看原因。
+name: pr-check
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: get.ps1 must be ASCII without BOM (irm | iex breaks otherwise)
+        run: |
+          if head -c3 get.ps1 | od -An -tx1 | grep -qi "ef bb bf"; then echo "get.ps1 starts with a UTF-8 BOM"; exit 1; fi
+          if LC_ALL=C grep -nP '[^\x00-\x7F]' get.ps1; then echo "get.ps1 contains non-ASCII characters"; exit 1; fi
+
+      - name: Shell syntax
+        run: for f in install.sh lab.sh uninstall.sh get.sh; do bash -n "$f"; done
+
+      - name: Python syntax
+        run: python3 -m py_compile app/*.py tools/*.py
+
+      - name: PowerShell syntax
+        shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem -Filter *.ps1 | ForEach-Object {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
+            if ($errs) { $bad++; $errs | ForEach-Object { Write-Host "$($_.Extent.File):$($_.Extent.StartLineNumber) $($_.Message)" } }
+          }
+          if ($bad) { exit 1 }
+
+      - name: codex/ branches may only change deployment files (AGENTS.md)
+        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/')
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git diff --name-only "origin/${BASE_REF}...HEAD" > changed.txt
+          echo "Changed files:"; cat changed.txt
+          allowed='^(install-windows\.ps1|install\.sh|lab\.sh|verify-windows\.ps1|repair-windows\.ps1|get\.ps1|get\.sh|tools/agentlab_doctor\.py|deploy/codex/[^/]+\.md|README\.md|docs/[^/]+\.md)$'
+          if grep -Ev "$allowed" changed.txt; then
+            echo "These files are outside the set a codex/ branch may change. Do not merge; see AGENTS.md."
+            exit 1
+          fi

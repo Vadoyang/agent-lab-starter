@@ -25,7 +25,17 @@
 Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '^(127|169\.254)\.' } | Select-Object IPAddress, InterfaceAlias
 ```
 
-建立紀錄檔 `deploy-logs\deploy-log.md`，寫下參數（不含任何密碼）與開始時間。
+確認版本來源：
+
+```powershell
+git rev-parse --is-inside-work-tree; git remote get-url origin; git status --short; git log -1 --oneline
+```
+
+- 是 git clone、在 `main`、沒有未提交的改動 → 先 `git pull --ff-only` 取得最新正式版。
+- 有未提交的改動或不在 `main` → 讀 `deploy-logs\deploy-log.md` 了解上次做到哪，不要丟棄改動；不確定就問。
+- 不是 git clone → 照常佈署，但第 5 階段無法開 PR（改用回報附改前改後）。
+
+建立紀錄檔 `deploy-logs\deploy-log.md`，寫下參數（不含任何密碼）、版本（`git log -1 --oneline`）與開始時間。
 
 **關卡 0**：必填參數齊全。
 
@@ -129,6 +139,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\verify-windows.ps1 -Stage 
 
 我修改過的佈署腳本（若有）
   - <檔名>：<改了什麼、為什麼>（詳見 deploy-log.md）
+  - PR：<網址，或「請到這個網址按 Create pull request」>；請看過 Files changed 再按 Merge
 
 需要人接手的事
   - 從另一台電腦開啟入口網站，確認區網連得到
@@ -145,11 +156,21 @@ wsl -d Ubuntu-24.04 -u root -- bash -lc "grep '^PORTAL_PIN=' /root/agent-lab-sta
 
 ---
 
+## 第 5 階段：把修正送回 GitHub（有修改佈署檔時）
+
+照 `AGENTS.md` 的「把修正送回 GitHub」：檢查只改了允許的檔案 → 開 `codex/fix-…` 分支 → 逐一 `git add` → commit →
+`git push -u origin <分支>` → `gh pr create`（沒有 `gh` 就給使用者 compare 網址）。不可 push 到 `main`、不可自己合併。
+
+**關卡 5**：PR 已建立（或已給出建立網址），網址寫在第 4 階段回報與 `deploy-log.md`。
+
+---
+
 ## 日常與後續情況
 
 | 情況 | 做法 |
 |---|---|
-| 套件換新版，或你修改了佈署腳本 | `.\install-windows.ps1 -Update` → 3A 驗收 |
+| 你修改了佈署腳本 | `.\install-windows.ps1 -Update` → 3A 驗收 → 第 5 階段 |
+| 使用者在 GitHub 合併了新版 | `git switch main` → `git pull --ff-only` → `.\install-windows.ps1 -Update` → 3A 驗收 |
 | 主機重新開機後 | 使用者登入後等 2 分鐘 → 3A；不過就 3B |
 | 模型主機稍後才就緒 | 3A 加 `-WithModel`；不過就 3B |
 | 只想看目前狀態 | `.\repair-windows.ps1 -Diagnose`（不修改任何東西） |
@@ -160,8 +181,9 @@ wsl -d Ubuntu-24.04 -u root -- bash -lc "grep '^PORTAL_PIN=' /root/agent-lab-sta
 
 | 設定 | 建議 | 原因 |
 |---|---|---|
-| 啟動方式 | 以系統管理員身分開 ChatGPT／Codex 桌面程式 | 安裝與防火牆修復需要系統管理員權限，Agent 繼承程式的權限 |
+| 啟動方式 | 以系統管理員身分開 ChatGPT／Codex 桌面程式 | 安裝與防火牆修復需要系統管理員權限，Agent 繼承程式的權限；仍出現 740 錯誤時見 `AGENTS.md`「沒辦法以系統管理員身分執行時」 |
 | Agent 執行環境 | PowerShell（不要切到 WSL 模式） | 腳本都是 PowerShell，會自己呼叫 `wsl.exe` |
 | 核准模式 | 「Ask for approval」 | 每一個寫入、連網、提權的動作都經人核准；自癒迴圈仍會照常執行，只是每一步請你按核准 |
 | 不要用 | Full access、核准政策設為 never | 會讓 Agent 不受專案資料夾與核准限制 |
-| 工作資料夾 | 開在 `<REPO_DIR>` | Codex 才會讀到根目錄的 `AGENTS.md` |
+| 工作資料夾 | 開在 `<REPO_DIR>`（用 `git clone` 下載的資料夾） | Codex 才會讀到根目錄的 `AGENTS.md`，修正也才能用 PR 送回 GitHub |
+| Windows 帳號名稱 | 最好是英文 | Codex 社群回報：使用者資料夾路徑含非英文字元時可能啟動失敗，可設環境變數 `CODEX_HOME` 指到英文路徑 |

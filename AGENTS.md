@@ -42,11 +42,15 @@
 - 修改 `.env` 中**非秘密**的設定：`LLM_UPSTREAM`、`MODEL`、`GUARD_MODEL`、`LLM_ALLOWED_MODELS`、`PORTAL_PORT`、`GRAFANA_PORT`、
   `WAZUH_DASHBOARD_PORT`（埠號被占用時）。注意：改埠號後 Windows 防火牆規則與網址也要跟著改，優先改用 TROUBLESHOOTING 的 M20 處理。改完執行 `./lab.sh up`。不可修改 token、密碼、PIN，也不可把 `GUARDRAILS_DEFAULT` 改成 `0`。
 - **修正佈署腳本的錯誤**：`install-windows.ps1`、`install.sh`、`lab.sh`、`verify-windows.ps1`、`repair-windows.ps1`、
-  `tools/agentlab_doctor.py`、`deploy/codex/*.md`。條件：
+  `get.ps1`（必須維持純 ASCII、不含 BOM）、`get.sh`、`tools/agentlab_doctor.py`、`deploy/codex/*.md`，
+  以及 `README.md` 與 `docs/` 下說明安裝步驟的文件。條件：
   1. 修改是為了讓佈署能繼續（不是為了讓某個檢查「看起來」通過）；
   2. 改動最小，並把**改了哪個檔、哪幾行、為什麼、改前改後**寫進 `deploy-log.md`；
   3. 改完先執行 `.\install-windows.ps1 -Update` 把程式碼同步進 WSL，再重新驗收；
-  4. 不得放寬任何驗收條件（例如改門檻、刪檢查項、把 fail 改成 warn）。
+  4. 不得放寬任何驗收條件（例如改門檻、刪檢查項、把 fail 改成 warn）；
+  5. 驗收通過後，依下方「把修正送回 GitHub」開分支與 PR，讓修正進到安裝包，之後所有人安裝都會拿到。
+- 本資料夾是 git clone 時：`git status`、`git diff`、`git switch -c codex/...`、`git add <佈署檔>`、`git commit`、
+  `git push -u origin codex/...`、`gh pr create`（細節見下方）。
 
 ## 絕對禁止（即使能讓檢查通過也不行）
 
@@ -59,6 +63,8 @@
    防火牆只可建立本套件定義的規則：Hyper-V 規則 `AgentLab-8080／3000／8443`，以及 portproxy 備援的 `AgentLab-PP-*`（僅私人／網域網路）。
 5. **不安裝 Docker Desktop**，也不改用它。
 6. **不動模型主機**：DGX／Ollama 只測連線，不登入、不改設定。
+7. **不直接改正式版**：不 push 到 `main`、不 `git push --force`、不自己合併 PR、不改 GitHub repo 設定、不刪分支或 tag。
+   正式版只能由使用者在 GitHub 上按「Merge」更新。不改 `.github/`（PR 自動檢查的規則）。
 
 ## 要先問使用者的動作
 
@@ -66,6 +72,49 @@
 - 任何會刪除資料或環境的動作：`wsl --unregister`、`install-windows.ps1 -Reinstall`、`./uninstall.sh`、`./lab.sh destroy`、
   `docker compose down -v`、`docker volume rm`、`docker system prune`（含 volume）、刪除資料夾、重建資料庫、重新產生 `.env`（`--fresh-env`）。
 - 安裝本套件以外的軟體、修改 BIOS、修改 `.wslconfig` 的記憶體上限（`WF4` 會保留原值，不算）。
+
+---
+
+## 把修正送回 GitHub（讓安裝包本身變好）
+
+這個資料夾是使用者從 GitHub `git clone` 下來的維護用副本。其他人用一行指令（`get.ps1`／`get.sh`）安裝時，
+下載的是 GitHub 上 `main` 的版本。所以你修好的佈署腳本，要送回 GitHub、經使用者核准合併，安裝包才算真的修好。
+
+**時機**：你修改過佈署檔，而且修改後 `verify-windows.ps1 -Stage Post`（模型就緒時加 `-WithModel`）整體 `PASS`。
+沒修改任何檔案就不用做。
+
+**步驟**（每一步照常寫進 `deploy-log.md`）：
+
+1. 確認是 git clone：`git rev-parse --is-inside-work-tree` 回 `true`，且 `git remote get-url origin` 是 GitHub 網址。
+   不是的話（例如用一行指令或 zip 安裝的資料夾），跳過本節，在回報裡附上 `git diff` 等效的改前改後內容，請使用者轉給維護者。
+2. 第一次 commit 前設定這個資料夾的作者名（不要用使用者的個人 email）：
+   `git config user.name "AgentLab Codex ($env:COMPUTERNAME)"`、`git config user.email "codex@agentlab.invalid"`
+3. `git status --porcelain` 與 `git diff --stat`：**只能**出現「允許修改」清單裡的檔案
+   （`install-windows.ps1`、`install.sh`、`lab.sh`、`verify-windows.ps1`、`repair-windows.ps1`、`get.ps1`、`get.sh`、
+   `tools/agentlab_doctor.py`、`deploy/codex/*.md`、`README.md`、`docs/` 下的說明文件）。
+   出現 `app/`、`config/`、`docker-compose*.yml`、`.env`、`deploy-logs/`、`deploy-report-*.json` 或任何清單外的檔案 → 不要 commit，
+   把那些改動還原（`git restore <檔案>`），在回報裡說明。
+4. 開分支並 commit：
+   ```powershell
+   git switch -c codex/fix-<yyyyMMdd>-<簡短英文描述>
+   git add <逐一列出要送的檔案>        # 不要用 git add . 或 git add -A
+   git commit -m "fix(deploy): <一句話>" -m "問題代碼：<例如 P05、D17>`n原因：<…>`n驗收：verify-windows -Stage Post <PASS 與否>`n主機：<Windows 版本、WSL 版本>"
+   ```
+5. 推上 GitHub：`git push -u origin <分支名>`。第一次推送會跳出瀏覽器要使用者登入 GitHub——這是「需要人」的步驟，告訴使用者按什麼後等待。
+6. 開 PR：
+   - 有 `gh` 且 `gh auth status` 正常：`gh pr create --base main --head <分支名> --title "<同 commit 標題>" --body-file deploy-logs\pr-body.md`
+     （`pr-body.md` 你先寫好：問題、證據代碼、改了什麼、驗收結果；不含任何 token、密碼、PIN）。
+   - 沒有 `gh`：給使用者這個網址，請他按「Create pull request」：`https://github.com/<owner>/<repo>/compare/main...<分支名>?expand=1`
+7. 回報裡寫 PR 網址，並提醒使用者：看過「Files changed」沒問題再按「Merge pull request」。合併前不要再在同一分支以外的地方改同一個檔。
+8. 使用者合併後，`git switch main`、`git pull --ff-only` 回到最新正式版。
+
+同一次佈署修了好幾個問題，可以放在同一個分支、分成幾個 commit。下一次佈署開始前先 `git switch main` 與 `git pull --ff-only`。
+
+## 沒辦法以系統管理員身分執行時
+
+部分版本的 Codex 桌面程式即使以系統管理員身分開啟，PowerShell 仍會回 740「需要提升權限」。遇到時：
+用 `Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','<完整路徑>\install-windows.ps1', ...`
+執行需要權限的腳本（使用者要在 Windows 跳出的視窗按「是」），結束後從 `deploy-logs\` 的紀錄與報告檔讀結果，不要猜。
 
 ---
 
@@ -104,3 +153,4 @@ Get-Content $env:USERPROFILE\.wslconfig
 
 `verify-windows.ps1 -Stage Post -WithModel` 的整體結果為 `PASS`，並依 RUNBOOK 第 4 階段格式回報。
 模型主機尚未就緒時：不加 `-WithModel` 的整體 `PASS`，並明講 C11、C13 待模型就緒後補跑。
+若你修改過佈署檔：分支已推上 GitHub，並已開好 PR（或已給使用者建立 PR 的網址）。

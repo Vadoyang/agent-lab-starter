@@ -135,3 +135,19 @@
 | 剛重開機後全部連不到 | 先登入 Windows（排程工作在登入後啟動 WSL），等 2 分鐘再 `.\repair-windows.ps1 -Auto` |
 | 改了佈署腳本但沒效果 | WSL 跑的是複本：改完一定要 `.\install-windows.ps1 -Update`（P09 會偵測） |
 | `lab.sh` 執行出現 `$'\r': command not found` | CRLF：`python3 tools/agentlab_doctor.py repair F18` |
+| PowerShell 回 740「需要提升權限」 | Codex 部分版本的已知問題。照 `AGENTS.md`「沒辦法以系統管理員身分執行時」用 `Start-Process -Verb RunAs -Wait` 執行，結果從 `deploy-logs\` 讀 |
+| 使用者帳號資料夾含中文，Codex 開不起來 | 社群回報的已知問題：設定使用者環境變數 `CODEX_HOME=C:\codex-home`（英文路徑）後重開 Codex，或改用英文名稱的 Windows 帳號 |
+
+---
+
+## 6. 一行安裝（`get.ps1`／`get.sh`）與 GitHub
+
+| 狀況 | 原因 | 處理 |
+|---|---|---|
+| `Cannot download the kit` | 沒網路、公司 proxy 擋下、repo 不是公開、分支名稱打錯 | 瀏覽器開 `https://github.com/<owner>/<repo>` 確認看得到；`-Ref` 確認分支或 tag 存在；有 proxy 時先在瀏覽器測 `https://github.com` |
+| 貼上指令後出現一堆紅字 `The term 'param' is not recognized`（param 前面有看不見的字元） | `get.ps1` 被存成含 BOM 的 UTF-8 | 維護者檢查 `get.ps1` 開頭是否有 BOM（位元組 EF BB BF），改存成無 BOM、純 ASCII 後送 PR |
+| 一行指令開了新視窗後又關掉 | 使用者在 UAC 視窗按了「否」 | 重貼一次，按「是」；或直接用「終端機（系統管理員）」貼 |
+| `git pull failed` | 維護用資料夾有未提交的改動或不在 `main` | `git status` 看是什麼；是 Codex 上次的修正就先完成第 5 階段 PR；不可直接丟棄改動，要先問 |
+| `git push` 跳出 GitHub 登入視窗 | 第一次推送，Git Credential Manager 要授權 | 需要人：請使用者在瀏覽器登入並按「Authorize」 |
+| `git push` 被拒（403） | 登入的 GitHub 帳號沒有這個 repo 的寫入權限 | 需要人：請 repo 擁有者把該帳號加為 Collaborator，或改由擁有者的帳號推送 |
+| `gh: command not found` 或 `gh auth status` 失敗 | 沒裝 GitHub CLI 或未登入 | 不需要它也能完成：改給使用者 compare 網址建立 PR |

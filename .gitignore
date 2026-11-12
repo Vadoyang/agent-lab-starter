@@ -24,3 +24,6 @@ app/zz-test-ca.crt
 /deploy-report-*.json
 /deploy-logs/
 .synced_src_mtime
+
+# get.ps1／get.sh 記錄下載版本
+.source.json
