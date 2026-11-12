@@ -26,6 +26,10 @@
 .PARAMETER InstallArgs
   轉交給 install.sh 的參數，例如 '--ollama point --model-url http://192.168.1.50:11434'。
 
+.PARAMETER Update
+  只同步程式碼進 WSL（保留 .env、紀錄、憑證、結果）並套用（./lab.sh update），不重跑整個安裝。
+  套件換新版、或自動化佈署代理修改了佈署腳本之後使用。
+
 .PARAMETER Reinstall
   WSL 裡已經有 /root/agent-lab-starter 時，先刪掉再重新複製（會連同資料與 .env 一起刪）。
 
@@ -52,10 +56,16 @@ param(
   [string]$Memory = "40GB",
   [string]$InstallArgs = "",
   [switch]$Reinstall,
+  [switch]$Update,
   [switch]$SkipAutostart
 )
 
 $ErrorActionPreference = "Stop"
+# 完整安裝紀錄：給人與自動化佈署代理（Codex）回頭查錯
+$LogDir = Join-Path $PSScriptRoot "deploy-logs"
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+$Transcript = Join-Path $LogDir ("install-windows-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".log")
+try { Start-Transcript -Path $Transcript -Append | Out-Null } catch { }
 $env:WSL_UTF8 = "1"          # 讓 wsl.exe 輸出 UTF-8（舊版是 UTF-16，字串比對會失敗）
 $Ports = @(8080, 3000, 8443)  # 入口網站、Grafana、Wazuh dashboard
 $LinuxDir = "/root/agent-lab-starter"
@@ -64,7 +74,22 @@ function Step($t) { Write-Host ""; Write-Host "== $t" -ForegroundColor Cyan }
 function Ok($t)   { Write-Host "  [OK] $t" -ForegroundColor Green }
 function Info($t) { Write-Host "  $t" }
 function Warn($t) { Write-Host "  [!] $t" -ForegroundColor Yellow }
-function Die($t)  { Write-Host "  [X] $t" -ForegroundColor Red; exit 1 }
+function Die($t)  {
+  Write-Host "  [X] $t" -ForegroundColor Red
+  Write-Host "  下一步：.\repair-windows.ps1 -Diagnose（收齊診斷資料），或 .\repair-windows.ps1 -Auto（自動修復）" -ForegroundColor Yellow
+  Write-Host "  完整紀錄：$Transcript"
+  try { Stop-Transcript | Out-Null } catch { }
+  exit 1
+}
+function Get-SourceStamp {
+  # 本資料夾（Windows 端套件）最新的修改時間（epoch 秒），用來判斷 WSL 內是否落後
+  $files = Get-ChildItem -Path $PSScriptRoot -Recurse -File -ErrorAction SilentlyContinue |
+           Where-Object { $_.FullName -notmatch '\\(deploy-logs|\.git|__pycache__)\\' -and $_.Name -notmatch '^deploy-report' }
+  # Windows PowerShell 5.1 的 Measure-Object -Maximum 不接受日期，改用排序
+  $newest = ($files | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).LastWriteTimeUtc
+  if (-not $newest) { return 0 }
+  return [int64]([DateTimeOffset]$newest).ToUnixTimeSeconds()
+}
 
 function Invoke-Wsl {
   # 用 root 在指定發行版執行指令；回傳 exit code
@@ -199,9 +224,28 @@ $src = $PSScriptRoot
 if (-not (Test-Path (Join-Path $src "install.sh"))) { Die "找不到 install.sh。請在 agent-lab-starter 資料夾內執行本腳本。" }
 $srcLinux = (& wsl.exe --distribution $Distro --user root -- wslpath -a "$src").Trim()
 $exists = (Invoke-Wsl @("test", "-d", $LinuxDir)) -eq 0
+$stamp = Get-SourceStamp
 if ($exists -and -not $Reinstall) {
-  Warn "WSL 裡已經有 $LinuxDir，不覆蓋（裡面有你的設定與資料）。"
-  Info "要更新程式碼，請用 git pull；要整個重來，加上 -Reinstall。"
+  # 已安裝過：同步程式碼，但保留使用者的設定與資料（.env、紀錄、憑證、結果、工作佇列）
+  Info "WSL 裡已經有 $LinuxDir：同步程式碼（保留 .env、logs、results、jobs、憑證）…"
+  $sync = Join-Path $env:TEMP "agentlab-sync.sh"
+  Write-LfFile $sync @"
+set -e
+SRC='$srcLinux'
+DST='$LinuxDir'
+cd "`$SRC"
+tar --exclude=./.env --exclude=./.host_ip --exclude=./logs --exclude=./results --exclude=./jobs \
+    --exclude=./deploy-logs --exclude=./.git --exclude='./config/wazuh_indexer_ssl_certs/*' \
+    --exclude='*/__pycache__' -cf - . | tar -C "`$DST" -xf -
+cd "`$DST"
+grep -rlIZ `$'\r' --exclude-dir=.git --exclude-dir=logs --exclude-dir=results --exclude='*.ps1' . | xargs -0 -r sed -i 's/\r`$//'
+chmod +x ./*.sh tools/*.py config/wazuh_integrations/custom-soar 2>/dev/null || true
+echo $stamp > .synced_src_mtime
+echo "synced to `$DST"
+"@
+  $syncLinux = (& wsl.exe --distribution $Distro --user root -- wslpath -a "$sync").Trim()
+  if ((Invoke-Wsl @("bash", $syncLinux)) -ne 0) { Die "同步程式碼失敗。" }
+  Ok "程式碼已同步到 WSL 的 $LinuxDir。"
 } else {
   $copy = Join-Path $env:TEMP "agentlab-copy.sh"
   Write-LfFile $copy @"
@@ -214,15 +258,26 @@ if [ -d "`$DST" ]; then
 fi
 mkdir -p "`$DST"
 cp -a "`$SRC/." "`$DST/"
+rm -rf "`$DST/deploy-logs"
 cd "`$DST"
 # 從 Windows 下載或用 git 取出時可能變成 CRLF 換行，Linux 腳本會壞掉：所有文字檔（.ps1 除外）一律轉回 LF
 grep -rlIZ `$'\r' --exclude-dir=.git --exclude='*.ps1' . | xargs -0 -r sed -i 's/\r`$//'
-chmod +x ./*.sh config/wazuh_integrations/custom-soar 2>/dev/null || true
+chmod +x ./*.sh tools/*.py config/wazuh_integrations/custom-soar 2>/dev/null || true
+echo $stamp > .synced_src_mtime
 echo "copied to `$DST"
 "@
   $copyLinux = (& wsl.exe --distribution $Distro --user root -- wslpath -a "$copy").Trim()
   if ((Invoke-Wsl @("bash", $copyLinux)) -ne 0) { Die "複製失敗。" }
   Ok "已複製到 WSL 的 $LinuxDir。"
+}
+
+if ($Update) {
+  Step "套用更新（./lab.sh update）"
+  & wsl.exe --distribution $Distro --user root -- bash -lc "cd $LinuxDir && ./lab.sh update"
+  if ($LASTEXITCODE -ne 0) { Die "./lab.sh update 失敗。" }
+  Ok "已套用。接著請執行 .\verify-windows.ps1 -Stage Post 驗收。"
+  try { Stop-Transcript | Out-Null } catch { }
+  exit 0
 }
 
 # =============================================================================
@@ -234,7 +289,7 @@ if ($InstallArgs -notmatch '--yes') {
 Info "模型建議選「指向現有模型服務」，填 DGX 的位址；這台主機沒有 GPU，本機跑模型會很慢。"
 $cmd = "cd $LinuxDir && ./install.sh $InstallArgs"
 & wsl.exe --distribution $Distro --user root -- bash -lc $cmd
-if ($LASTEXITCODE -ne 0) { Die "install.sh 沒有成功完成。可以進 WSL 查看：wsl -d $Distro -u root，然後 cd $LinuxDir; ./lab.sh logs" }
+if ($LASTEXITCODE -ne 0) { Die "install.sh 沒有成功完成（WSL 內完整紀錄：$LinuxDir/results/install-latest.log）。" }
 
 # =============================================================================
 Step "第 8 步：登入後自動啟動（重開機後容器會回來）"
@@ -264,3 +319,5 @@ Write-Host "  Wazuh                   https://localhost:8443（自簽憑證）"
 Write-Host ""
 Info "操作 PIN 與帳密見上方 install.sh 的完成畫面，或在 WSL 裡看 $LinuxDir/.env。"
 Info "日常管理：wsl -d $Distro -u root，然後 cd $LinuxDir; ./lab.sh status"
+Info "完整紀錄：$Transcript"
+try { Stop-Transcript | Out-Null } catch { }

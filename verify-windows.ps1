@@ -47,8 +47,29 @@ $Ports = @(8080, 3000, 8443)
 $checks = New-Object System.Collections.ArrayList
 if (-not $Report) { $Report = Join-Path $PSScriptRoot ("deploy-report-" + $Stage.ToLower() + ".json") }
 
+# 每個檢查未通過時對應的修法代碼（repair-windows.ps1 依此自動修；M 開頭＝需要人）
+#   WF*＝Windows 端可自動修；WSL＝交給 WSL 內 ./lab.sh repair auto；M*＝需要人
+$FixMap = @{
+  W01 = "M-WINVER"; W02 = "M-BIOS"; W03 = "M-HW"; W04 = "M-DISK"; W06 = "INSTALL"; W07 = "M-DOCKERDESKTOP"
+  W09 = "M19"; W10 = "M13"; W11 = "M-ADMIN"; W12 = "M20"
+  P01 = "INSTALL"; P02 = "WF4"; P03 = "WF7"; P04 = "WF2"; P05 = "WF3"; P06 = "WF1"; P07 = "WF2"; P08 = "WF1"
+  P09 = "WF6"; P10 = "WF1"; P11 = "WF5"
+  B07 = "M16"; C11 = "M13"; C13 = "M13"
+  C05 = "M21"; C07 = "M21"; C08 = "M21"; C09 = "M21"; C10 = "M21"; C14 = "M21"; C15 = "M21"; B10 = "M21"; B11 = "M21"
+}
 function Add-Check($id, $desc, [bool]$required, $result, $evidence) {
-  [void]$checks.Add([ordered]@{ id = $id; desc = $desc; required = $required; result = $result; evidence = $evidence })
+  $fix = $null
+  if ($result -ne "pass" -and $result -ne "skip") {
+    $fix = if ($FixMap.ContainsKey($id)) { $FixMap[$id] } elseif ($id -match '^[BC]\d\d$') { "WSL" } else { $null }
+  }
+  [void]$checks.Add([ordered]@{ id = $id; desc = $desc; required = $required; result = $result; evidence = $evidence; fix = $fix })
+}
+function Get-SourceStamp {
+  $files = Get-ChildItem -Path $PSScriptRoot -Recurse -File -ErrorAction SilentlyContinue |
+           Where-Object { $_.FullName -notmatch '\\(deploy-logs|\.git|__pycache__)\\' -and $_.Name -notmatch '^deploy-report' }
+  $newest = ($files | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).LastWriteTimeUtc
+  if (-not $newest) { return 0 }
+  return [int64]([DateTimeOffset]$newest).ToUnixTimeSeconds()
 }
 function PF([bool]$ok) { if ($ok) { "pass" } else { "fail" } }
 function Get-Distros {
@@ -77,8 +98,11 @@ function Test-Http($url) {
   } catch { return @{ ok = $false; status = $_.Exception.Message } }
 }
 
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-  [Security.Principal.WindowsBuiltInRole]::Administrator)
+$isAdmin = $false
+try {
+  $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator)
+} catch { }
 
 if ($Stage -eq "Pre") {
   # ---------------------------------------------------------------- 佈署前檢查（不做任何變更）
@@ -140,7 +164,15 @@ else {
   $task = Get-ScheduledTask -TaskName "AgentLab-WSL-Autostart" -ErrorAction SilentlyContinue
   Add-Check "P05" "登入後自動啟動的排程工作已建立" $false $(if ($task) { "pass" } else { "warn" }) "task=$([bool]$task)"
   $local = Test-Http "http://localhost:8080/api/config"
-  Add-Check "P06" "本機瀏覽器連得到入口網站（http://localhost:8080）" $true (PF $local.ok) "status=$($local.status)"
+  # 同時從 WSL 內部測：內部通、Windows 不通＝網路轉送問題（WF5）；內部也不通＝服務問題（WF1）
+  $inner = (& wsl.exe --distribution $Distro --user root -- bash -c "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/config" 2>$null | Out-String).Trim()
+  if ($local.ok) {
+    Add-Check "P06" "本機瀏覽器連得到入口網站（http://localhost:8080）" $true "pass" "status=$($local.status)"
+  } elseif ($inner -eq "200") {
+    Add-Check "P11" "入口網站在 WSL 內正常，但 Windows 連不到（網路轉送問題）" $true "fail" "windows=$($local.status) wsl=$inner"
+  } else {
+    Add-Check "P06" "本機瀏覽器連得到入口網站（http://localhost:8080）" $true "fail" "windows=$($local.status) wsl=$inner"
+  }
   $lan = Get-LanIp
   if ($lan) {
     $l2 = Test-Http "http://${lan}:8080/api/config"
@@ -150,6 +182,11 @@ else {
   }
   $g = Test-Http "http://localhost:3000/api/health"
   Add-Check "P08" "Grafana 可連（http://localhost:3000）" $true (PF $g.ok) "status=$($g.status)"
+  # WSL 內的程式碼是否與本資料夾同步（本資料夾較新＝改過但沒同步進去）
+  $src = Get-SourceStamp
+  $synced = (& wsl.exe --distribution $Distro --user root -- bash -c "cat $LinuxDir/.synced_src_mtime 2>/dev/null" 2>$null | Out-String).Trim()
+  $syncedN = 0; [void][int64]::TryParse($synced, [ref]$syncedN)
+  Add-Check "P09" "WSL 內的程式碼與本資料夾同步" $true (PF ($src -le $syncedN + 2)) "windows=$src wsl=$synced"
 
   # WSL 內的逐項驗收
   $arg = if ($WithModel) { "--with-model" } else { "" }
@@ -159,7 +196,7 @@ else {
     $inner = $json | ConvertFrom-Json
     foreach ($c in $inner.checks) { Add-Check $c.id $c.desc ([bool]$c.required) $c.result $c.evidence }
   } catch {
-    Add-Check "P09" "WSL 內的驗收報告可讀取（$LinuxDir/results/verify-latest.json）" $true "fail" "讀不到或格式錯誤"
+    Add-Check "P10" "WSL 內的驗收報告可讀取（$LinuxDir/results/verify-latest.json）" $true "fail" "讀不到或格式錯誤"
   }
 }
 
@@ -172,6 +209,8 @@ $out = [ordered]@{
   overall = $(if ($failed.Count -eq 0) { "PASS" } else { "FAIL" })
   failed_required = $failed
   warnings = $warned
+  fixes_suggested = @($checks | Where-Object { $_.fix } | ForEach-Object { $_.fix } | Sort-Object -Unique)
+  next_step = $(if ($failed.Count -eq 0) { "完成" } else { ".\repair-windows.ps1 -Auto（自動修復可修的項目，M 開頭需要人）" })
   checks = $checks
 }
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -181,7 +220,8 @@ foreach ($c in $checks) {
   $mark = $c.result.ToUpper().PadRight(4)
   $req = if ($c.required) { "*" } else { " " }
   $color = switch ($c.result) { "pass" { "Green" } "fail" { "Red" } "warn" { "Yellow" } default { "Gray" } }
-  Write-Host "[$mark] $($c.id) $req $($c.desc)" -ForegroundColor $color
+  $fx = if ($c.fix) { "  → $($c.fix)" } else { "" }
+  Write-Host "[$mark] $($c.id) $req $($c.desc)$fx" -ForegroundColor $color
 }
 Write-Host ""
 Write-Host "整體：$($out.overall)（* 為必要項）  未通過的必要項：$(if ($failed.Count) { $failed -join ', ' } else { '無' })  警告：$(if ($warned.Count) { $warned -join ', ' } else { '無' })"

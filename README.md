@@ -30,9 +30,15 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 
 腳本會安裝 WSL 與 Ubuntu 24.04、設定 mirrored 網路與常駐、開防火牆 8080／3000／8443、把環境複製進 WSL，再執行下面的 `install.sh`（Docker 選「自動安裝」）。第一次裝 WSL 需要重新開機（結束代碼 3010），開機後再執行一次。**此腳本尚未在實體 Windows 主機上驗證，遇到問題請回報。**不使用 Docker Desktop，理由見設計說明書 §6.1。
 
-裝完用 `.erify-windows.ps1 -Stage Post -WithModel` 驗收；佈署前可先跑 `.erify-windows.ps1 -Stage Pre -LlmUrl http://<DGX的IP>:11434`。
+裝完用 `.\verify-windows.ps1 -Stage Post -WithModel` 驗收；佈署前可先跑 `.\verify-windows.ps1 -Stage Pre -LlmUrl http://<DGX的IP>:11434`。
 
-**交給 Codex 自動佈署**：根目錄的 `AGENTS.md` 是給 AI 代理的工作規則，步驟在 `deploy/codex/RUNBOOK.md`，要貼給 Codex 的指令在 `deploy/codex/PROMPT.md`。
+出問題時：`.\repair-windows.ps1 -Diagnose` 看問題（不修改），`.\repair-windows.ps1 -Auto` 自動修復可修的項目；
+套件換新版或改了佈署腳本：`.\install-windows.ps1 -Update`（只同步程式碼，保留 `.env`、紀錄與憑證）。
+所有安裝、驗收、修復紀錄都寫在 `deploy-logs\`。
+
+**交給 ChatGPT（Codex）全自動佈署**：Codex 依根目錄 `AGENTS.md` 的規則執行 `deploy/codex/RUNBOOK.md`，
+遇到錯誤時自己跑診斷、自動修復、查 `deploy/codex/TROUBLESHOOTING.md` 的代碼表處理，只在需要重新開機、要刪資料、
+或安全控制未通過時停下來問人。要貼給 Codex 的指令在 `deploy/codex/PROMPT.md`。
 
 ### Linux
 
@@ -99,6 +105,9 @@ cd agent-lab-starter
 ./lab.sh up          # 恢復
 ./lab.sh destroy     # 全部清除
 ./lab.sh verify      # 佈署驗收（加 --with-model 另跑良性冒煙測試），證據寫入 results/verify-latest.json
+./lab.sh diagnose    # 收齊診斷資料並比對已知問題（results/diagnose-latest.json ＋ 各服務 log）
+./lab.sh repair auto # 自動修復可修的問題（results/repair-latest.json）；repair list 列出所有修法
+./lab.sh update      # 程式碼更新後重建映像與容器，並讓 Wazuh 規則生效
 ```
 
 跑實驗：最簡單是在入口網站操作；指令列也可以：
@@ -142,10 +151,12 @@ docker compose run --rm agent-governed python run_tests.py --checks             
 |---|---|
 | `install.sh` | 一鍵安裝器（Docker 兩選項、Ollama 兩選項、佈署、印網址） |
 | `install-windows.ps1` | Windows 11 安裝器（WSL2＋Ubuntu＋防火牆＋常駐，最後執行 install.sh） |
-| `verify-windows.ps1` | Windows 端佈署前檢查（Pre）與佈署後驗收（Post），輸出 JSON 報告 |
-| `AGENTS.md`、`deploy/codex/` | 交給 Codex 等 AI 代理自動佈署：工作規則、分階段步驟、貼上用的指令 |
+| `verify-windows.ps1` | Windows 端佈署前檢查（Pre）與佈署後驗收（Post），每個未通過項目附修法代碼 |
+| `repair-windows.ps1` | Windows 端診斷（`-Diagnose`）與自癒迴圈（`-Auto`／`-Fix <代碼>`） |
+| `tools/agentlab_doctor.py` | WSL 端診斷與自動修復（`./lab.sh diagnose`／`repair`），已知問題知識庫 |
+| `AGENTS.md`、`deploy/codex/` | 交給 ChatGPT（Codex）全自動佈署：工作規則、分階段步驟、疑難排解代碼表、貼上用的指令 |
 | `uninstall.sh` | 解除安裝 / 清除（soft／full 選單） |
-| `lab.sh` | 日常管理 up／seed／down／destroy／verify |
+| `lab.sh` | 日常管理 up／seed／down／destroy／verify／diagnose／repair／update |
 | `docker-compose.wazuh.yml` | Wazuh 版全部元件與網路隔離 |
 | `docker-compose.yml` | ELK 版（替代後端，單純無既有 SIEM 時用） |
 | `.env.example` | 設定範本（模型位址、埠、誘餌秘密、憑證） |

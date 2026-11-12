@@ -18,12 +18,21 @@
 #   ./install.sh --model gemma4:31b --model-url http://192.168.1.50:11434
 #   ./install.sh --guard-model <模型名稱>   護欄另用本地防護模型判斷注入（選用；預設只用規則）
 #   ./install.sh --host-ip 192.168.1.20      指定瀏覽器要連的主機 IP（不指定則自動偵測）
+#   ./install.sh --fresh-env                 重新產生 .env（預設：已有 .env 就沿用，token 與 PIN 不變）
+#
+# 重跑是安全的：已有 .env 時沿用（只套用這次明確給的 --model／--model-url／--guard-model／--host-ip），
+# 並自動補上新版 .env.example 才有的設定鍵。安裝過程完整寫入 results/install-<時間>.log。
 #
 # 解除安裝 / 收起：見 ./uninstall.sh 與 ./lab.sh down / destroy
 # =============================================================================
 set -uo pipefail
 cd "$(dirname "$0")"
 ROOT_DIR="$(pwd)"
+# 完整安裝紀錄（給人與自動化佈署代理回頭查錯）：畫面照常顯示，同時寫入 results/
+mkdir -p results
+INSTALL_LOG="results/install-$(date +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "$INSTALL_LOG") 2>&1
+ln -sf "$(basename "$INSTALL_LOG")" results/install-latest.log
 
 # ---------- 參數 ----------
 ASSUME_YES=0
@@ -33,10 +42,12 @@ OPT_MODEL=""
 OPT_MODEL_URL=""
 OPT_GUARD_MODEL=""
 OPT_HOST_IP=""
+OPT_FRESH_ENV=0
 USE_COLOR=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --yes|-y) ASSUME_YES=1 ;;
+    --fresh-env) OPT_FRESH_ENV=1 ;;
     --docker) OPT_DOCKER="${2:-}"; shift ;;
     --ollama) OPT_OLLAMA="${2:-}"; shift ;;
     --model) OPT_MODEL="${2:-}"; shift ;;
@@ -253,8 +264,22 @@ step "第 3 步：產生設定檔 .env"
 # =============================================================================
 SKIP_ENV=0
 if [ -f .env ]; then
-  if ask_yn ".env 已存在，要沿用它（不覆蓋設定）嗎？" N; then
+  # 自動化重跑時預設沿用（token、PIN 不變，已在跑的容器不會對不上）；要重來請加 --fresh-env
+  if [ "$OPT_FRESH_ENV" = 0 ] && ask_yn ".env 已存在，要沿用它（不覆蓋設定）嗎？" Y; then
     ok "沿用現有 .env。"; SKIP_ENV=1
+    # 這次明確給的參數仍要生效
+    [ -n "$OPT_MODEL_URL" ] && sed -i "s#^LLM_UPSTREAM=.*#LLM_UPSTREAM=${OPT_MODEL_URL}#" .env && info "已更新 LLM_UPSTREAM。"
+    [ -n "$OPT_MODEL" ] && sed -i "s#^MODEL=.*#MODEL=${OPT_MODEL}#" .env && info "已更新 MODEL。"
+    [ -n "$OPT_GUARD_MODEL" ] && sed -i "s#^GUARD_MODEL=.*#GUARD_MODEL=${OPT_GUARD_MODEL}#" .env && info "已更新 GUARD_MODEL。"
+    [ -n "$OPT_HOST_IP" ] && echo "$OPT_HOST_IP" > .host_ip
+    # 新版 .env.example 才有的設定鍵，補進舊 .env（值用範本預設）
+    added=""
+    while IFS= read -r line; do
+      key="${line%%=*}"
+      [[ "$line" =~ ^[A-Z_][A-Z0-9_]*= ]] || continue
+      grep -q "^${key}=" .env || { echo "$line" >> .env; added="$added $key"; }
+    done < .env.example
+    [ -n "$added" ] && info "已補上新設定鍵：$added"
   else
     cp -f .env ".env.bak.$(date +%Y%m%d-%H%M%S)"; info "已備份舊 .env。"
   fi

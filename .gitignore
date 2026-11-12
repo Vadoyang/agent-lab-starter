@@ -22,3 +22,5 @@ __pycache__/
 # 測試殘留
 app/zz-test-ca.crt
 /deploy-report-*.json
+/deploy-logs/
+.synced_src_mtime
