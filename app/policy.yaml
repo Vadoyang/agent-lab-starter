@@ -30,3 +30,13 @@ roles:
         # 只能封鎖受害端點網段（對應 v1 規劃的 Z5），而且一律要人工核准
         allowed_cidrs: ["10.20.50.0/24"]
         require_approval: true
+      # 第三章 lab 新增工具（受治理組才有；對照組沒有這些工具）
+      fetch_web:          # 3.3.2 視覺隱藏注入：只能抓內部網頁模擬器，且只拿可見文字
+        allow: true
+        allowed_hosts: [websim]
+      summarize_docs:     # 3.3.1 跨文件碎片注入：批次摘要多份 wiki 文件
+        allow: true
+      review_code:        # 3.3.3 import 解析洩密：審查程式碼倉內檔案
+        allow: true
+      notes:              # 3.4.2 跨會話資料擷取：筆記以擁有者授權
+        allow: true

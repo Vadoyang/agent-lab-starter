@@ -26,6 +26,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 
 import httpx
 from fastapi import Body, FastAPI
@@ -52,6 +53,49 @@ INJECTION_PATTERNS = [
     r"you are now (in )?(developer|dan|jailbreak) mode",
 ]
 INJECTION_RE = [re.compile(p, re.I) for p in INJECTION_PATTERNS]
+
+# 去除空白後的「緊湊簽章」：對付「在每個字元間插入空白／以同形異義字替換」的過濾器旁路
+# （對應課程 3.2.1）。先正規化＋去空白，再比對這些不含空白的樣式。
+INJECTION_COMPACT = [
+    r"忽略(先前|之前|以上|所有|前面)?(的)?(指示|指令|規則|設定)",
+    r"無視(先前|之前|以上|所有)?(的)?(指示|指令|規則)",
+    r"ignore(all|any)?(previous|prior|above|earlier)(instructions|prompts|rules)",
+    r"disregard(all|any)?(previous|prior|above)(instructions|rules)",
+    r"(developer|dan|jailbreak)mode",
+    r"(系統提示|systemprompt|開發者訊息)",
+]
+INJECTION_COMPACT_RE = [re.compile(p, re.I) for p in INJECTION_COMPACT]
+
+# 常見同形異義字（Cyrillic／Greek → Latin），正規化時折疊，避免用 а 取代 a 之類的規避
+HOMOGLYPHS = {
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "х": "x", "ѕ": "s", "і": "i",
+    "ј": "j", "ԁ": "d", "ո": "n", "ս": "u", "А": "A", "Е": "E", "О": "O", "Р": "P",
+    "С": "C", "Х": "X", "Ι": "I", "Ο": "O", "ο": "o", "ν": "v", "α": "a", "ρ": "p",
+}
+ZERO_WIDTH = dict.fromkeys([0x200B, 0x200C, 0x200D, 0xFEFF, 0x2060, 0x00AD, 0x180E], None)
+
+
+def normalize(text: str) -> str:
+    """正規化以利比對：移除零寬字元、NFKC、折疊同形異義字。"""
+    t = text.translate(ZERO_WIDTH)
+    t = unicodedata.normalize("NFKC", t)
+    return "".join(HOMOGLYPHS.get(c, c) for c in t)
+
+
+# 外送方向的「外部連結」偵測（對應 3.4.1 投毒導向釣魚網址）：
+# 回答或工具參數若出現不在白名單內的外部網址，視為疑似把使用者導去外部站台。
+URL_RE = re.compile(r"https?://([^/\s\"'）)]+)", re.I)
+ALLOWED_URL_HOSTS = {h.strip().lower() for h in
+                     os.getenv("GUARD_URL_ALLOWLIST", "threatintel,localhost").split(",") if h.strip()}
+
+
+def find_exfil_url(text: str) -> list[dict]:
+    hits = []
+    for m in URL_RE.finditer(text):
+        host = m.group(1).split(":")[0].lower()
+        if host and host not in ALLOWED_URL_HOSTS:
+            hits.append({"category": "exfil_url", "type": host[:40], "sample": mask(m.group(0))})
+    return hits
 
 # 敏感資料：實驗環境的誘餌格式，加上一般常見格式
 DLP_PATTERNS = [
@@ -92,10 +136,19 @@ def strings(obj) -> list[str]:
 
 def find_injection(text: str) -> list[dict]:
     hits = []
+    norm = normalize(text)
     for i, rx in enumerate(INJECTION_RE):
-        m = rx.search(text)
+        m = rx.search(norm)
         if m:
             hits.append({"category": "injection", "type": f"pattern_{i + 1}", "sample": m.group(0)[:24]})
+    # 去空白後再比對緊湊簽章：命中但原文沒命中 → 是用空白／同形異義字規避（evasion）
+    compact = re.sub(r"\s+", "", norm)
+    base_hit = bool(hits)
+    for i, rx in enumerate(INJECTION_COMPACT_RE):
+        if rx.search(compact):
+            hits.append({"category": "injection", "type": ("evasion" if not base_hit else f"compact_{i + 1}"),
+                         "sample": "（去空白後命中）"})
+            break
     return hits
 
 
@@ -116,6 +169,17 @@ def redact_dlp(s: str) -> str:
     for name, rx in DLP_RE:
         s = rx.sub(f"［已遮蔽：{name}］", s)
     return s
+
+
+def redact_outbound(s: str) -> str:
+    """外送方向的遮蔽：敏感資料＋不在白名單內的外部連結。"""
+    s = redact_dlp(s)
+
+    def _url(m):
+        host = m.group(1).split(":")[0].lower()
+        return m.group(0) if host in ALLOWED_URL_HOSTS else "［已遮蔽：外部連結］"
+
+    return URL_RE.sub(_url, s)
 
 
 # ---------- 防護模型（選用） ----------
@@ -173,6 +237,10 @@ def check(body: dict = Body(default={})):
 
     else:
         findings += find_dlp(joined)
+        if stage == "answer":
+            # 外部連結只在最終回答檢查：工具參數的目的地已由 Gateway 的 per-tool 白名單管控，
+            # 在 tool_args 再查會誤擋到合法的內部工具（例如 fetch_web 連內部網頁模擬器）。
+            findings += find_exfil_url(joined)
 
     cats = sorted({f["category"] for f in findings})
     if findings:
@@ -188,7 +256,7 @@ def check(body: dict = Body(default={})):
                 decision = "redact"
                 out = walk(data, lambda s: redact_dlp(drop_injection_lines(s)))
         else:  # answer
-            decision, out = "redact", walk(data, redact_dlp)
+            decision, out = "redact", walk(data, redact_outbound)
 
     if body.get("dry_run"):   # 佈署驗收的自我測試：只回傳結果，不寫紀錄（避免觸發告警與 SOAR）
         return {"decision": decision, "data": out, "engine": engine, "dry_run": True,
@@ -206,4 +274,5 @@ def check(body: dict = Body(default={})):
 @app.get("/health")
 def health():
     return {"ok": True, "model": GUARD_MODEL or None,
-            "rules": {"injection": len(INJECTION_RE), "dlp": len(DLP_RE)}}
+            "rules": {"injection": len(INJECTION_RE), "injection_compact": len(INJECTION_COMPACT_RE),
+                      "dlp": len(DLP_RE), "url_allowlist": sorted(ALLOWED_URL_HOSTS)}}

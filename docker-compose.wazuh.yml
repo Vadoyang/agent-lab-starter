@@ -186,6 +186,14 @@ services:
     networks: [svc_net]
     restart: unless-stopped
 
+  websim:          # 內部網頁模擬器（第三章 3.3.2）：受治理組的 fetch_web 只能抓這台
+    build: ./app
+    command: python sink.py
+    environment: {SINK_ROLE: websim, ES_URL: ""}
+    volumes: [./logs:/logs]
+    networks: [svc_net]
+    restart: unless-stopped
+
   toolproxy:       # 治理閘道（PEP）：驗憑證、查政策、代為執行、全程紀錄（寫本機檔，Wazuh 再讀）
     build: ./app
     command: uvicorn toolproxy:app --host 0.0.0.0 --port 8000
@@ -204,8 +212,11 @@ services:
       # 護欄：toolproxy 代 Agent 呼叫護欄服務；開關狀態寫在 logs/guard-mode.json
       GUARD_URL: http://guard:8000
       GUARDRAILS_DEFAULT: ${GUARDRAILS_DEFAULT:-1}
+      REPO_DIR: /repo
+      NOTES_PATH: /logs/notes.json
     volumes:
       - ./wiki:/wiki:ro
+      - ./repo:/repo:ro
       - ./logs:/logs
     networks: [agent_net, svc_net]
     depends_on:

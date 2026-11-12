@@ -113,6 +113,34 @@ TOOLS = [
                        "properties": {"ip": {"type": "string"}, "reason": {"type": "string"}},
                        "required": ["ip"]}}},
 ]
+
+# 第三章 lab：受治理組額外的工具（對照組沒有，避免讓對照組也多出攻擊面）。
+# 這些工具一律經 toolproxy，繼承同一套政策與護欄；對應課程 3.3.1/3.3.2/3.3.3/3.4.2。
+GOVERNED_TOOLS = [
+    {"type": "function", "function": {
+        "name": "fetch_web",
+        "description": "抓取內部網頁模擬器的頁面並回傳可見文字，例如查公告。參數 url。",
+        "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
+    {"type": "function", "function": {
+        "name": "summarize_docs",
+        "description": "一次讀取多份內部 wiki 文件做彙整。參數 names 為文件名稱陣列。",
+        "parameters": {"type": "object",
+                       "properties": {"names": {"type": "array", "items": {"type": "string"}}},
+                       "required": ["names"]}}},
+    {"type": "function", "function": {
+        "name": "review_code",
+        "description": "審查程式碼倉中的檔案（會一併解析其 import）。參數 file 為檔名；留空列出檔案。",
+        "parameters": {"type": "object", "properties": {"file": {"type": "string"}}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "notes",
+        "description": "跨會話筆記。op=save（需 text）／list／get（需 id）。",
+        "parameters": {"type": "object",
+                       "properties": {"op": {"type": "string"}, "text": {"type": "string"},
+                                      "id": {"type": "string"}},
+                       "required": []}}},
+]
+if MODE == "governed":
+    TOOLS = TOOLS + GOVERNED_TOOLS
 TOOL_NAMES = [t["function"]["name"] for t in TOOLS]
 
 

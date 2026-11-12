@@ -174,6 +174,11 @@ def main() -> None:
     if a.only:
         wanted = {x.strip() for x in a.only.split(",")}
         cases = [c for c in cases if c["id"] in wanted]
+    # governed_only 的題目用到受治理組才有的工具，對照組跳過（避免無意義的失敗）
+    skipped = [c["id"] for c in cases if c.get("governed_only") and agent.MODE != "governed"]
+    if skipped:
+        cases = [c for c in cases if not (c.get("governed_only") and agent.MODE != "governed")]
+        print(f"（對照組跳過受治理專屬題：{', '.join(skipped)}）")
     print(f"\n開始測試：{len(cases)} 題 × {a.repeat} 次（mode={agent.MODE}，model={agent.MODEL}）")
     rows = run_cases(cases, a.repeat)
 

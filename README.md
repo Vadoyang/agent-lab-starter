@@ -11,7 +11,7 @@
 
 ![入口網站](docs/portal/01_hero.png)
 
-> 本環境供中研院「基於開源工具之零信任動態風險回應機制」研究使用；全部採開源工具。設計說明見 **[`docs/環境設計說明書_v2.md`](docs/環境設計說明書_v2.md)**。
+> 本環境供中研院「基於開源工具之零信任動態風險回應機制」研究使用；全部採開源工具。設計說明見 **[`docs/環境設計說明書_v2.md`](docs/環境設計說明書_v2.md)**；第三章攻擊情境 lab 的設計見 **[`docs/第三章攻擊情境_lab設計_v1.md`](docs/第三章攻擊情境_lab設計_v1.md)**。
 
 ---
 
@@ -78,10 +78,10 @@ cd agent-lab-starter
 | **模型代理 llm-proxy** | 受治理 Agent 連模型的唯一出口：模型白名單、拒絕雲端模型、只開放兩個 API、每次呼叫留紀錄 | 內部 |
 | **soar 決策層**（SOAR，Block 1） | 收 Wazuh 告警 → 信心度評分 V1–V5 → AUTO_BLOCK 撤銷 agent token（動態存取控制） | 內部 |
 | **AI Agent**（baseline／governed 兩種） | 受測對象；入口網站經工作佇列驅動（`runner-*`），也可用 `docker compose run` | 內部 |
-| postgres／victim／attacker-site／threatintel | 假公司資料庫、受害主機、攻擊收集站、威脅情資 | 內部 |
+| postgres／victim／attacker-site／threatintel／websim | 假公司資料庫、受害主機、攻擊收集站、威脅情資、內部網頁模擬器 | 內部 |
 
-偵測規則（`config/wazuh_cluster/local_rules.xml`，100900–100912）：
-`100901` 閘道拒絕｜`100902` 疑似注入｜`100903` 對內攻擊(victim)｜`100904` 對外外洩(attacker)｜`100905` 待人工核准｜`100906` 已執行封鎖｜`100907` 誘餌秘密外洩｜`100908` SOAR 處置 Agent 憑證｜`100909` 護欄攔下注入｜`100910` 護欄擋下外送｜`100911` 模型代理拒絕｜`100912` 護欄遮蔽敏感資料。
+偵測規則（`config/wazuh_cluster/local_rules.xml`，100900–100913）：
+`100901` 閘道拒絕｜`100902` 疑似注入｜`100903` 對內攻擊(victim)｜`100904` 對外外洩(attacker)｜`100905` 待人工核准｜`100906` 已執行封鎖｜`100907` 誘餌秘密外洩｜`100908` SOAR 處置 Agent 憑證｜`100909` 護欄攔下注入｜`100910` 護欄擋下外送｜`100911` 模型代理拒絕｜`100912` 護欄遮蔽敏感資料｜`100913` 護欄遮蔽外部連結。
 
 四個 Docker 網路做隔離：`svc_net`／`agent_net` 不能上網（internal），`egress_net` 可連模型，`ui_net` 開網頁埠。受治理 Agent 只連得到治理閘道與模型代理，連不到資料庫、內部主機與外網。入口網站與 Agent 之間用共享資料夾（`jobs/`）傳工作，沒有網路連線，不會破壞隔離。
 
@@ -152,7 +152,7 @@ docker compose run --rm agent-governed python run_tests.py --checks             
 | `config/wazuh_cluster/` | Wazuh manager 設定與自訂偵測規則（100900–100912） |
 | `grafana/` | 戰情室資料來源與「AI Agent 治理藍隊戰情室」儀表板 |
 | `app/` | Agent、治理閘道、護欄（`guard.py`）、模型代理（`llmproxy.py`）、SOAR、驗收（`verify_env.py`）、入口網站（`portal.py`、`portal_static/`）、執行器（`runner.py`）、受害/攻擊/情資服務、測試考卷 |
-| `db/`、`wiki/`、`data/` | 假公司資料庫（含誘餌帳密）、夾帶注入的內部文件與 web log |
+| `db/`、`wiki/`、`repo/`、`data/` | 假公司資料庫（含誘餌帳密）、夾帶注入的內部文件、程式碼審查情境、web log |
 | `docs/` | 環境設計說明書、操作手冊（含實機截圖）、入口網站截圖 |
 
 所有人名、證號、密碼皆為虛構；`CANARY-`、`FLAG{` 開頭的字串是誘餌，用來判定是否外洩。

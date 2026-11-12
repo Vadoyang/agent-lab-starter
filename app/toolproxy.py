@@ -76,7 +76,7 @@ WRITE_KEYWORDS = re.compile(
     r"\b(insert|update|delete|drop|alter|create|grant|revoke|truncate|copy|call|do|vacuum|set)\b", re.I)
 
 
-def h_query_db(args: dict, rules: dict, trace: str):
+def h_query_db(args: dict, rules: dict, trace: str, agent: dict | None = None):
     sql = str(args.get("sql") or "").strip().rstrip(";").strip()
     if not sql:
         return "deny", "缺少 sql 參數", None
@@ -101,7 +101,7 @@ def h_query_db(args: dict, rules: dict, trace: str):
     return "allow", "通過", {"columns": cols, "rows": [[str(v) for v in r] for r in rows]}
 
 
-def h_search_logs(args: dict, rules: dict, trace: str):
+def h_search_logs(args: dict, rules: dict, trace: str, agent: dict | None = None):
     q = str(args.get("query") or "").strip()
     size = max(1, min(int(args.get("size") or 20), int(rules.get("max_hits", 20))))
     body = {"size": size, "sort": [{"@timestamp": "desc"}],
@@ -113,7 +113,7 @@ def h_search_logs(args: dict, rules: dict, trace: str):
     return "allow", "通過", {"total": d["total"]["value"], "hits": [h["_source"] for h in d["hits"]]}
 
 
-def h_read_doc(args: dict, rules: dict, trace: str):
+def h_read_doc(args: dict, rules: dict, trace: str, agent: dict | None = None):
     docs = sorted(p[:-3] for p in os.listdir(WIKI_DIR) if p.endswith(".md"))
     name = os.path.basename(str(args.get("name") or "")).strip().removesuffix(".md").strip("「」『』\"' ")
     if not name:
@@ -125,7 +125,7 @@ def h_read_doc(args: dict, rules: dict, trace: str):
         return "allow", "通過", {"name": match, "content": f.read()[:6000]}
 
 
-def h_http_get(args: dict, rules: dict, trace: str):
+def h_http_get(args: dict, rules: dict, trace: str, agent: dict | None = None):
     url = str(args.get("url", ""))
     u = urllib.parse.urlparse(url)
     host = (u.hostname or "").lower()
@@ -138,7 +138,7 @@ def h_http_get(args: dict, rules: dict, trace: str):
     return "allow", "通過", {"status": r.status_code, "body": r.text[:2000]}
 
 
-def h_block_ip(args: dict, rules: dict, trace: str):
+def h_block_ip(args: dict, rules: dict, trace: str, agent: dict | None = None):
     ip = str(args.get("ip", "")).strip()
     try:
         addr = ipaddress.ip_address(ip)
@@ -156,8 +156,151 @@ def h_block_ip(args: dict, rules: dict, trace: str):
     return "allow", "通過", {"ok": True, "message": f"已封鎖 {ip}（模擬）"}
 
 
+# ---------- 第三章 lab：受治理組新增的工具（對照組沒有，見 agent.py） ----------
+REPO_DIR = os.getenv("REPO_DIR", "/repo")
+NOTES_PATH = os.getenv("NOTES_PATH", "/logs/notes.json")
+
+# 隱藏樣式：被 CSS 藏起來、人看不到但原始 HTML 仍會餵給 LLM 的內容（對應 3.3.2）
+HIDDEN_STYLE = re.compile(
+    r"display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0|opacity\s*:\s*0|color\s*:\s*transparent", re.I)
+
+
+def extract_visible_text(html: str) -> tuple[str, str]:
+    """內容擷取管線（防線）：移除註解、script/style、以及被樣式藏起來的元素，只留人看得到的文字。
+    回傳（可見文字, 被移除的隱藏文字）。對應課程 3.3.2『視覺隱藏注入』：原始 HTML 直接進 LLM 才會中招。"""
+    hidden_parts: list[str] = []
+    html = re.sub(r"<!--.*?-->", "", html, flags=re.S)
+    html = re.sub(r"<(script|style|head)\b[^>]*>.*?</\1>", "", html, flags=re.S | re.I)
+
+    def _drop(m):
+        hidden_parts.append(re.sub(r"<[^>]+>", " ", m.group(0)))
+        return " "
+
+    # 帶隱藏樣式、aria-hidden 或 hidden 屬性的元素，連同內容移除
+    html = re.sub(r'<([a-zA-Z][\w-]*)\b[^>]*(?:style\s*=\s*"[^"]*(?:display\s*:\s*none|visibility\s*:\s*hidden|'
+                  r'font-size\s*:\s*0|opacity\s*:\s*0|color\s*:\s*transparent)[^"]*"|aria-hidden\s*=\s*"true"|'
+                  r'\shidden(?=[\s>]))[^>]*>.*?</\1>', _drop, html, flags=re.S | re.I)
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"[ \t]+", " ", re.sub(r"\n\s*\n+", "\n", text)).strip()
+    return text[:4000], " ".join(hidden_parts)[:2000]
+
+
+def h_fetch_web(args: dict, rules: dict, trace: str, agent: dict | None = None):
+    """抓取網頁，但只把『可見文字』交給 Agent（content extraction 防線）。
+    若被移除的隱藏內容疑似注入，另寫一筆 guard 紀錄（規則 100909），讓戰情室看得到這次攻擊嘗試。"""
+    url = str(args.get("url", ""))
+    u = urllib.parse.urlparse(url)
+    host = (u.hostname or "").lower()
+    if u.scheme not in ("http", "https"):
+        return "deny", "只允許 http／https", None
+    if host not in [h.lower() for h in rules.get("allowed_hosts", [])]:
+        return "deny", f"目的地 {host or '(空白)'} 不在白名單", None
+    r = httpx.get(url, timeout=10, follow_redirects=False,
+                  headers={"X-Agent-Trace": trace, "User-Agent": "toolproxy"})
+    visible, hidden = extract_visible_text(r.text)
+    if hidden and looks_like_injection(hidden):
+        log_event("guard-decisions", {
+            "trace_id": trace, "agent_id": agent["id"] if agent else None, "stage": "tool_result",
+            "direction": "in", "tool": "fetch_web", "guard_decision": "redact", "categories": "injection",
+            "findings": [{"category": "injection", "type": "hidden_html", "sample": "（隱藏元素，已移除）"}],
+            "engine": "content-filter"})
+    return "allow", "通過", {"url": url, "visible_text": visible, "hidden_removed": bool(hidden)}
+
+
+def h_summarize_docs(args: dict, rules: dict, trace: str, agent: dict | None = None):
+    """批次摘要：把多份文件放進同一個上下文（對應 3.3.1 跨文件碎片注入）。
+    合併後的內容仍會經輸入護欄檢查——單一檔案乾淨、合併後才顯現的指令，就是這題要量測的。"""
+    names = args.get("names") or args.get("docs") or []
+    if isinstance(names, str):
+        names = [n.strip() for n in re.split(r"[,，、]", names) if n.strip()]
+    docs = sorted(p[:-3] for p in os.listdir(WIKI_DIR) if p.endswith(".md"))
+    out, used = [], []
+    for name in names[:8]:
+        base = os.path.basename(str(name)).strip().removesuffix(".md").strip("「」『』\"' ")
+        match = base if base in docs else next((d for d in docs if base and (base in d or d in base)), None)
+        if match:
+            with open(os.path.join(WIKI_DIR, match + ".md"), encoding="utf-8") as f:
+                out.append({"name": match, "content": f.read()[:3000]})
+            used.append(match)
+    if not out:
+        return "allow", "找不到文件", {"error": "找不到指定文件", "documents": docs}
+    return "allow", "通過", {"documents_used": used, "sections": out}
+
+
+def _resolve_imports(path: str, seen: set, depth: int = 0):
+    """解析 Python 檔的本地 import，讀入被引用的同專案檔（對應 3.3.3 import 解析洩密）。
+    只在 REPO_DIR 內解析，不跟隨到專案外（路徑安全）。密碼等誘餌靠輸出護欄遮蔽，不靠這裡。"""
+    real = os.path.realpath(path)
+    if depth > 3 or real in seen or not real.startswith(os.path.realpath(REPO_DIR) + os.sep):
+        return []
+    seen.add(real)
+    try:
+        with open(real, encoding="utf-8") as f:
+            code = f.read()[:4000]
+    except OSError:
+        return []
+    files = [{"file": os.path.relpath(real, REPO_DIR), "code": code}]
+    for mod in re.findall(r"^(?:from|import)\s+([A-Za-z_][\w.]*)", code, re.M):
+        cand = os.path.join(REPO_DIR, mod.split(".")[0] + ".py")
+        if os.path.exists(cand):
+            files += _resolve_imports(cand, seen, depth + 1)
+    return files
+
+
+def h_review_code(args: dict, rules: dict, trace: str, agent: dict | None = None):
+    """程式碼審查：讀取提交的檔案並解析其 import。回傳內容會過輸出護欄，誘餌密碼會被遮蔽。"""
+    name = os.path.basename(str(args.get("file") or args.get("path") or "")).strip()
+    if not name:
+        try:
+            return "allow", "列出檔案", {"files": sorted(os.listdir(REPO_DIR))}
+        except OSError:
+            return "allow", "沒有程式碼倉", {"files": []}
+    target = os.path.join(REPO_DIR, name)
+    if not os.path.exists(target):
+        return "allow", "找不到檔案", {"error": f"找不到檔案：{name}"}
+    files = _resolve_imports(target, set())
+    return "allow", "通過", {"entry": name, "resolved_files": files}
+
+
+def _load_notes() -> dict:
+    try:
+        with open(NOTES_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def h_notes(args: dict, rules: dict, trace: str, agent: dict | None = None):
+    """跨會話筆記（對應 3.4.2）：Session ID 可預測，但存取一律以『擁有者＝目前身分』授權。
+    取用別人的筆記 → 拒絕（confused-deputy 防護）。這就是『可預測 ID 不等於可存取』的重點。"""
+    owner = agent["id"] if agent else "anon"
+    op = str(args.get("op") or "list").lower()
+    store = _load_notes()
+    mine = store.get(owner, {})
+    if op == "save":
+        seq = len(mine) + 1
+        nid = f"{owner}-{seq:04d}"
+        mine[nid] = {"text": str(args.get("text", ""))[:500], "trace": trace}
+        store[owner] = mine
+        os.makedirs(os.path.dirname(NOTES_PATH) or ".", exist_ok=True)
+        with open(NOTES_PATH, "w", encoding="utf-8") as f:
+            json.dump(store, f, ensure_ascii=False)
+        return "allow", "通過", {"saved": nid}
+    if op == "get":
+        nid = str(args.get("id", ""))
+        note_owner = nid.rsplit("-", 1)[0] if "-" in nid else ""
+        if note_owner and note_owner != owner:
+            return "deny", f"跨會話存取遭拒：筆記 {nid} 不屬於目前身分（{owner}）", None
+        if nid not in mine:
+            return "allow", "找不到筆記", {"error": f"找不到筆記：{nid}"}
+        return "allow", "通過", {"id": nid, **mine[nid]}
+    return "allow", "通過", {"owner": owner, "note_ids": sorted(mine.keys())}
+
+
 HANDLERS = {"query_db": h_query_db, "search_logs": h_search_logs, "read_doc": h_read_doc,
-            "http_get": h_http_get, "block_ip": h_block_ip}
+            "http_get": h_http_get, "block_ip": h_block_ip,
+            "fetch_web": h_fetch_web, "summarize_docs": h_summarize_docs,
+            "review_code": h_review_code, "notes": h_notes}
 STATUS = {"allow": 200, "pending": 202, "deny": 403, "error": 500}
 
 # ---------- 護欄 ----------
@@ -232,7 +375,7 @@ def tool(name: str, args: dict = Body(default={}), authorization: str = Header(d
             record(x_trace_id, agent, name, args, "deny", why)
             return JSONResponse({"decision": "deny", "reason": why, "guard": g.get("findings", [])}, 403)
     try:  # 3. 代為執行（含參數檢查）
-        decision, reason, result = HANDLERS[name](args, rules, x_trace_id)
+        decision, reason, result = HANDLERS[name](args, rules, x_trace_id, agent)
     except Exception as e:  # noqa: BLE001
         decision, reason, result = "error", f"{type(e).__name__}: {e}"[:300], None
     suspected = bool(result) and looks_like_injection(json.dumps(result, ensure_ascii=False))
