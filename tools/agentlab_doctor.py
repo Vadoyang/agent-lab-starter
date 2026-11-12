@@ -370,8 +370,12 @@ def diagnose(bundle: str | None = None) -> dict:
         gov = s.get("runners", {}).get("governed", {})
         facts["model_ok"] = bool(gov.get("model_ok"))
         if not gov.get("model_ok"):
-            issue("D13", "warn", "受治理 Agent 連不到模型服務", "M13",
-                  {"detail": gov.get("detail"), "LLM_UPSTREAM": env.get("LLM_UPSTREAM", "")})
+            if gov.get("model_missing"):
+                issue("D13", "warn", f"模型主機連得到，但沒有 {env.get('MODEL', '')}（要在模型主機 ollama pull）", "M13",
+                      {"detail": gov.get("detail"), "MODEL": env.get("MODEL", ""), "model_missing": True})
+            else:
+                issue("D13", "warn", "受治理 Agent 連不到模型服務", "M13",
+                      {"detail": gov.get("detail"), "LLM_UPSTREAM": env.get("LLM_UPSTREAM", "")})
         bad = {k: v.get("detail") for k, v in s.get("components", {}).items()
                if not v.get("ok") and k not in ("model", "llm_proxy")}
         if bad and not not_running:

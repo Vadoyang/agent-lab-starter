@@ -15,7 +15,7 @@
 |---|---|---|---|
 | `REPO_DIR` | 是 | 套件在 Windows 上的資料夾（含 `install-windows.ps1`） | `C:\agentlab\agent-lab-starter` |
 | `LLM_URL` | 是 | 模型服務位址，結尾不要加斜線或 `/v1` | `http://192.168.1.50:11434` |
-| `MODEL` | 是 | 模型名稱（需支援 tool calling，且已在模型主機 pull） | `gemma4:31b` |
+| `MODEL` | 是 | 模型名稱，必須和模型主機上 `ollama list` 顯示的名稱完全一樣（需支援 tool calling） | `gemma4:31b` |
 | `HOST_IP` | 否 | 區網其他電腦連入口網站用的 IP；不給就自動偵測 | `192.168.1.20` |
 | `GUARD_MODEL` | 否 | 護欄另用的本地防護模型；不給就只用規則 | （留空） |
 
@@ -37,6 +37,10 @@ git rev-parse --is-inside-work-tree; git remote get-url origin; git status --sho
 
 建立紀錄檔 `deploy-logs\deploy-log.md`，寫下參數（不含任何密碼）、版本（`git log -1 --oneline`）與開始時間。
 
+**前置條件（使用者負責，你不可登入模型主機）**：模型主機（GB10／DGX）已依 `docs/新手操作手冊_GitHub與ChatGPT佈署_v2.md` 的 B 部分準備好——
+Ollama 設 `OLLAMA_HOST=0.0.0.0:11434` 與 `OLLAMA_NO_CLOUD=1`、已 `ollama pull <MODEL>`、防火牆只放行這台主機連 11434。
+Ollama 的 API 沒有帳號密碼；`.env` 的 `LLM_API_KEY=ollama` 是佔位字，不要向使用者索取 Ollama 帳密，也不要修改它。
+
 **關卡 0**：必填參數齊全。
 
 ---
@@ -45,12 +49,13 @@ git rev-parse --is-inside-work-tree; git remote get-url origin; git status --sho
 
 ```powershell
 cd <REPO_DIR>
-powershell -NoProfile -ExecutionPolicy Bypass -File .\verify-windows.ps1 -Stage Pre -LlmUrl <LLM_URL>
+powershell -NoProfile -ExecutionPolicy Bypass -File .\verify-windows.ps1 -Stage Pre -LlmUrl <LLM_URL> -Model <MODEL>
 ```
 
 讀 `deploy-report-pre.json`。每個未通過項目都有 `fix` 代碼，到 `TROUBLESHOOTING.md` §1 查。
 `W*` 大多是硬體、BIOS 或使用者決定的事：`M-BIOS`、`M-WINVER`、`M-DOCKERDESKTOP`、`M-HW`、`M-DISK` 停下來問；
-`W10`（模型連不到）可在使用者同意下繼續，模型就緒後補驗收；`W06`（WSL 未安裝）是正常的。
+`W10`（模型連不到）可在使用者同意下繼續，模型就緒後補驗收；`W13`（模型主機還沒有 `MODEL`）請使用者在模型主機執行
+`ollama pull <MODEL>`，或確認 `MODEL` 拼字與 `ollama list` 一致，同樣可在使用者同意下先繼續；`W06`（WSL 未安裝）是正常的。
 
 **關卡 1**：整體 `PASS`，或剩下的項目已經使用者同意略過。
 

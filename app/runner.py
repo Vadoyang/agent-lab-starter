@@ -42,7 +42,7 @@ MODEL_CHECK_S = 30
 TARGETS = [("postgres", 5432), ("wazuh.indexer", 9200), ("victim", 8080), ("attacker-site", 8080),
            ("threatintel", 8080), ("guard", 8000), ("toolproxy", 8000), ("llm-proxy", 8080), ("1.1.1.1", 443)]
 
-_model_cache = {"ts": 0.0, "ok": False, "detail": ""}
+_model_cache = {"ts": 0.0, "ok": False, "detail": "", "missing": False}
 
 
 def now_iso() -> str:
@@ -57,24 +57,50 @@ def write_json(path: str, obj: dict) -> None:
     os.replace(tmp, path)
 
 
-def model_status() -> tuple[bool, str]:
-    """模型服務連不連得到（每 30 秒查一次，避免一直打模型服務）。"""
+def model_names_match(wanted: str, available: list[str]) -> bool:
+    """MODEL 是否在模型服務的清單裡。Ollama 對沒寫標籤的名稱會補 :latest（gemma4 → gemma4:latest）。"""
+    if not wanted:
+        return False
+    names = set(available)
+    return wanted in names or (":" not in wanted and f"{wanted}:latest" in names)
+
+
+def model_status() -> tuple[bool, str, bool]:
+    """模型服務連不連得到，以及 .env 指定的 MODEL 是否已在模型主機下載（每 30 秒查一次）。
+
+    回傳 (ok, detail, missing)：missing＝模型服務有回應，但清單裡沒有 MODEL（模型主機要先 ollama pull）。
+    只看 HTTP 200 不夠：模型名稱打錯或沒 pull 時 /v1/models 仍回 200，要到真的呼叫才會失敗。
+    """
     if time.time() - _model_cache["ts"] < MODEL_CHECK_S:
-        return _model_cache["ok"], _model_cache["detail"]
+        return _model_cache["ok"], _model_cache["detail"], _model_cache["missing"]
+    missing = False
     try:
         r = httpx.get(f"{agent.LLM_BASE_URL}/models",
                       headers={"Authorization": f"Bearer {agent.LLM_API_KEY}"}, timeout=5)
-        ok, detail = r.status_code < 300, f"HTTP {r.status_code}"
+        if r.status_code >= 300:
+            ok, detail = False, f"HTTP {r.status_code}"
+        else:
+            try:
+                ids = [str(m.get("id", "")) for m in (r.json().get("data") or [])]
+            except Exception:  # noqa: BLE001
+                ids = []
+            if model_names_match(agent.MODEL, ids):
+                ok, detail = True, f"HTTP {r.status_code}，模型 {agent.MODEL} 已就緒"
+            else:
+                ok, missing = False, True
+                shown = "、".join(ids[:8]) or "（清單是空的）"
+                detail = (f"模型服務有回應，但沒有 {agent.MODEL}：請在模型主機執行 ollama pull {agent.MODEL}，"
+                          f"或把 .env 的 MODEL 改成已下載的名稱（目前看得到：{shown}）")
     except Exception as e:  # noqa: BLE001
         ok, detail = False, f"{type(e).__name__}"
-    _model_cache.update(ts=time.time(), ok=ok, detail=detail)
-    return ok, detail
+    _model_cache.update(ts=time.time(), ok=ok, detail=detail, missing=missing)
+    return ok, detail, missing
 
 
 def heartbeat(busy: bool, current: str = "") -> None:
-    ok, detail = model_status()
+    ok, detail, missing = model_status()
     write_json(os.path.join(JOBS, "status.json"), {
-        "mode": agent.MODE, "model": agent.MODEL, "model_ok": ok, "model_detail": detail,
+        "mode": agent.MODE, "model": agent.MODEL, "model_ok": ok, "model_detail": detail, "model_missing": missing,
         "busy": busy, "current": current, "ts": time.time(), "ts_iso": now_iso()})
 
 

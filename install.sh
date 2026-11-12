@@ -93,6 +93,26 @@ ask_val() {
   read -r -p "$(echo -e "${c_y}$prompt ${c_0}[預設 $def]：")" ans || true
   echo "${ans:-$def}"
 }
+# 確認模型主機（例如 GB10 上的 Ollama）連得到、而且已經下載 MODEL。只提醒、不中止：模型主機可能稍後才就緒。
+check_remote_model() {
+  local url="$1" model="$2" body
+  case "$url" in *host.docker.internal*) url="${url/host.docker.internal/localhost}" ;; esac
+  body=$(curl -s -m 6 "${url%/}/v1/models" 2>/dev/null) || body=""
+  if [ -z "$body" ]; then
+    warn "現在連不到 $1。模型主機要設 OLLAMA_HOST=0.0.0.0:11434，防火牆要放行這台主機；安裝會繼續，模型就緒後再驗收。"
+    return 0
+  fi
+  command -v python3 >/dev/null 2>&1 || { info "（沒有 python3，略過模型名稱檢查）"; return 0; }
+  if printf '%s' "$body" | python3 -c 'import json, sys
+m = sys.argv[1]
+ids = [str(d.get("id", "")) for d in (json.load(sys.stdin).get("data") or [])]
+sys.exit(0 if (m in ids or (":" not in m and m + ":latest" in ids)) else 1)' "$model" 2>/dev/null; then
+    ok "模型主機已有 $model。"
+  else
+    warn "模型主機連得到，但還沒有 $model：請在模型主機執行 ollama pull $model（安裝會繼續）。"
+  fi
+}
+
 # 二選一選單；回傳 1 或 2。$1 題目 $2 選項1 $3 選項2 $4 預設(1/2)
 ask_choice2() {
   local title="$1" o1="$2" o2="$3" def="${4:-1}" ans
@@ -223,6 +243,7 @@ if [ "$OLLAMA_MODE" = "point" ]; then
   info "  · 模型在「另一台」（例如 DGX）→ 填 http://<該台IP>:11434（結尾不要加斜線或 /v1）"
   LLM_UPSTREAM=$(ask_val "模型服務位址 LLM_UPSTREAM" "$DEF_URL")
   MODEL=$(ask_val "模型名稱 MODEL（需支援 tool calling）" "$DEF_MODEL")
+  check_remote_model "$LLM_UPSTREAM" "$MODEL"
   warn "請在模型主機上設定 OLLAMA_NO_CLOUD=1 並重啟 Ollama（停用雲端模型，避免提示被送出本機）。"
 else
   # 本機安裝 Ollama

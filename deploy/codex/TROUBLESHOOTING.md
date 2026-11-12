@@ -28,6 +28,7 @@
 | W07 | 已安裝 Docker Desktop | M-DOCKERDESKTOP | **要先問**：請使用者解除安裝 Docker Desktop，或放棄。不可自行解除安裝 | 重跑 `-Stage Pre` |
 | W09 | 下載來源連不到 | M19 | 見 §4 M19 | 重跑 `-Stage Pre` |
 | W10 | 模型服務連不到 | M13 | 見 §4 M13；可在使用者同意下先佈署平台 | — |
+| W13 | 模型主機連得到，但還沒有 `MODEL` | M13 | 見 §4 M13 第 4 點；可在使用者同意下先佈署平台 | 重跑 `-Stage Pre -LlmUrl … -Model …` |
 | W11 | 非系統管理員（warn） | M-ADMIN | 請使用者以系統管理員身分重開 Codex | — |
 | W12 | 8080／3000／8443 被占用 | M20 | 見 §4 M20 | 重跑 `-Stage Pre` |
 | P01 | WSL 發行版沒裝好 | INSTALL | 自動：重跑 RUNBOOK 第 2 階段的安裝指令（同一組參數） | `-Stage Post` |
@@ -59,7 +60,7 @@
 | D10 | Agent 憑證被 SOAR 撤銷中 | F10 | 呼叫入口網站 `/api/reset` 解除 | 通常是測試留下的；佈署驗收前應清除 |
 | D11 | 工作卡在 running > 15 分鐘 | F11 | 重啟兩個執行器 | — |
 | D12 | 程式碼比容器新 | F12 | `docker compose build` ＋ `up -d` | — |
-| D13 | Agent 連不到模型 | M13 | — | 見 §4 M13 |
+| D13 | Agent 連不到模型，或模型主機沒有 `MODEL`（證據有 `model_missing: true`） | M13 | — | 見 §4 M13 |
 | D14 | 入口網站回報元件不健康／無回應 | F04 | 重啟對應服務 | — |
 | D15 | `.env` 缺新版設定鍵 | F15 | 從 `.env.example` 補鍵（不改既有值）並 `up -d` | — |
 | D16 | `.env` 憑證是預設值或空白 | M16 | — | 見 §4 M16 |
@@ -96,11 +97,17 @@
 
 ## 4. 需要人或要特別處理的情況（`M*`）
 
-**M13 模型服務連不上**
-1. 從 Windows 測：`Test-NetConnection <DGX的IP> -Port 11434`；從 WSL 測：`curl -s http://<DGX的IP>:11434/v1/models`。
-2. 都不通 → 回報使用者檢查模型主機：Ollama 在線、`OLLAMA_HOST=0.0.0.0`、防火牆開 11434、`OLLAMA_NO_CLOUD=1`。你不可登入模型主機修改。
-3. 通，但 C11 仍失敗 → 檢查 `.env` 的 `LLM_UPSTREAM`（不要加 `/v1`）與 `MODEL` 名稱是否與 `/v1/models` 列出的一致；可修改這兩個值後 `./lab.sh up`。
-4. 模型清單裡沒有 `MODEL` → 回報使用者在模型主機 `ollama pull <MODEL>`。
+**M13 模型服務連不上，或模型主機沒有這個模型**
+1. 從 Windows 測：`Test-NetConnection <模型主機IP> -Port 11434`、`curl.exe -s http://<模型主機IP>:11434/v1/models`；
+   從 WSL 測：`curl -s http://<模型主機IP>:11434/v1/models`。
+2. 都不通 → 回報使用者照新手手冊 B 部分檢查模型主機：Ollama 在線、`OLLAMA_HOST=0.0.0.0:11434`、`OLLAMA_NO_CLOUD=1`、
+   防火牆有放行**這台主機的 IP**。你不可登入模型主機修改。
+3. Windows 通、WSL 不通 → 回報；可能是模型主機防火牆放行的 IP 和 WSL 連出的來源 IP 不同（附上兩邊的測試結果）。
+4. 通，但清單裡沒有 `MODEL`（W13、D13 證據 `model_missing: true`、C11 的 `hint`）→ 回報使用者二選一：
+   在模型主機執行 `ollama pull <MODEL>`；或把 `.env` 的 `MODEL` 改成清單裡已有的名稱（允許你改，改完 `./lab.sh up`）。
+   Ollama 對沒寫標籤的名稱會補 `:latest`（`gemma4` 等於 `gemma4:latest`，不等於 `gemma4:31b`）。
+5. 通、清單也有，C11 仍失敗 → 檢查 `.env` 的 `LLM_UPSTREAM`（結尾不要加 `/v1`）後 `./lab.sh up`。
+6. Ollama 沒有帳號密碼，不要向使用者索取；`.env` 的 `LLM_API_KEY` 是佔位字（模型主機前面另加了需要 token 的反向代理時，才由使用者自己改成 token）。
 
 **M16 `.env` 憑證是預設值**：**要先問**。處理方式是 `./install.sh --yes --fresh-env ...` 重新產生，接著執行 `./lab.sh repair F17` 同步資料庫唯讀密碼。
 

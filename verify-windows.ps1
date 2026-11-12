@@ -18,6 +18,9 @@
 .PARAMETER LlmUrl
   模型服務位址（例如 http://192.168.1.50:11434），Pre 會測試連線，Post 不需要。
 
+.PARAMETER Model
+  模型名稱（與 .env 的 MODEL 相同，例如 gemma4:31b）。Pre 時與 -LlmUrl 一起給，會確認模型主機已經下載這個模型（W13）。
+
 .PARAMETER WithModel
   Post 時另外跑一次良性冒煙測試（需要模型在線）。
 
@@ -25,7 +28,7 @@
   報告 JSON 的輸出路徑，預設寫在本資料夾：deploy-report-<stage>.json。
 
 .EXAMPLE
-  .\verify-windows.ps1 -Stage Pre -LlmUrl http://192.168.1.50:11434
+  .\verify-windows.ps1 -Stage Pre -LlmUrl http://192.168.1.50:11434 -Model gemma4:31b
   .\verify-windows.ps1 -Stage Post -WithModel
 
 .NOTES
@@ -35,6 +38,7 @@
 param(
   [ValidateSet("Pre", "Post")][string]$Stage = "Pre",
   [string]$LlmUrl = "",
+  [string]$Model = "",
   [switch]$WithModel,
   [string]$Distro = "Ubuntu-24.04",
   [string]$Report = ""
@@ -51,7 +55,7 @@ if (-not $Report) { $Report = Join-Path $PSScriptRoot ("deploy-report-" + $Stage
 #   WF*＝Windows 端可自動修；WSL＝交給 WSL 內 ./lab.sh repair auto；M*＝需要人
 $FixMap = @{
   W01 = "M-WINVER"; W02 = "M-BIOS"; W03 = "M-HW"; W04 = "M-DISK"; W06 = "INSTALL"; W07 = "M-DOCKERDESKTOP"
-  W09 = "M19"; W10 = "M13"; W11 = "M-ADMIN"; W12 = "M20"
+  W09 = "M19"; W10 = "M13"; W11 = "M-ADMIN"; W12 = "M20"; W13 = "M13"
   P01 = "INSTALL"; P02 = "WF4"; P03 = "WF7"; P04 = "WF2"; P05 = "WF3"; P06 = "WF1"; P07 = "WF2"; P08 = "WF1"
   P09 = "WF6"; P10 = "WF1"; P11 = "WF5"
   B07 = "M16"; C11 = "M13"; C13 = "M13"
@@ -136,6 +140,20 @@ if ($Stage -eq "Pre") {
     try { $u = [Uri]$LlmUrl; $ok = Test-Tcp $u.Host $u.Port } catch { $ok = $false }
     $models = Test-Http ($LlmUrl.TrimEnd('/') + "/v1/models")
     Add-Check "W10" "模型服務連得到（$LlmUrl）" $true (PF ($ok -and $models.ok)) "tcp=$ok /v1/models=$($models.status)"
+    if ($Model -and $models.ok) {
+      # 只看 /v1/models 回 200 不夠：模型名稱打錯或模型主機沒 pull 時仍是 200，要到真的呼叫才失敗
+      $ids = @()
+      try {
+        $j = Invoke-RestMethod -Uri ($LlmUrl.TrimEnd('/') + "/v1/models") -UseBasicParsing -TimeoutSec 10
+        $ids = @($j.data | ForEach-Object { [string]$_.id })
+      } catch { $ids = @() }
+      # Ollama 對沒寫標籤的名稱會補 :latest（gemma4 → gemma4:latest）
+      $has = ($ids -contains $Model) -or (($Model -notmatch ':') -and ($ids -contains ($Model + ":latest")))
+      $seen = if ($ids.Count) { ($ids | Select-Object -First 8) -join ", " } else { "（清單是空的）" }
+      Add-Check "W13" "模型主機已下載 $Model（未下載請在模型主機執行 ollama pull $Model）" $true (PF $has) "可用的模型：$seen"
+    } elseif ($Model) {
+      Add-Check "W13" "模型主機是否已下載 $Model（模型服務連不到，無法檢查，見 W10）" $false "skip" "未測試"
+    }
   } else {
     Add-Check "W10" "模型服務連線（未提供 -LlmUrl，略過）" $false "skip" "未測試"
   }

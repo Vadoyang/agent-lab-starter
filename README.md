@@ -37,7 +37,10 @@ irm https://raw.githubusercontent.com/Vadoyang/agent-lab-starter/main/get.ps1 | 
 curl -fsSL https://raw.githubusercontent.com/Vadoyang/agent-lab-starter/main/get.sh | bash
 ```
 
-新手完整步驟（建立 GitHub repo、讓 ChatGPT 自動佈署與修正安裝包）見 **[`docs/新手操作手冊_GitHub與ChatGPT佈署_v1.md`](docs/新手操作手冊_GitHub與ChatGPT佈署_v1.md)**。
+安裝前，模型主機（例如 GB10 上的 Ollama）要先準備好：`OLLAMA_HOST=0.0.0.0:11434`、`OLLAMA_NO_CLOUD=1`、已 `ollama pull` 要用的模型、防火牆只放行實驗主機。
+Ollama 的 API 沒有帳號密碼，安裝程式不會問；用哪個模型由這台主機的 `.env`（`MODEL`）決定，安裝與驗收會確認模型主機已下載該模型。
+
+新手完整步驟（準備 GB10、建立 GitHub repo、讓 ChatGPT 自動佈署與修正安裝包）見 **[`docs/新手操作手冊_GitHub與ChatGPT佈署_v2.md`](docs/新手操作手冊_GitHub與ChatGPT佈署_v2.md)**。
 每個 PR 會由 `.github/workflows/pr-check.yml` 自動檢查語法與修改範圍。
 
 ### Windows 11 Pro：已下載資料夾時（WSL2＋開源 Docker Engine）

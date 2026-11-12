@@ -92,7 +92,8 @@
     </form>
 
     <div class="model-warning" id="model-warning" hidden>
-      模型服務目前沒有連線，Agent 無法作答。請確認 <code>.env</code> 的 <code>LLM_UPSTREAM</code> 指向在線的模型服務（例如 DGX 上的 Ollama）。網路隔離檢查不需要模型，可以照常執行。
+      <span id="model-warning-text">模型服務目前沒有連線，Agent 無法作答。請確認 <code>.env</code> 的 <code>LLM_UPSTREAM</code> 指向在線的模型服務（例如 DGX 上的 Ollama）。</span>
+      網路隔離檢查不需要模型，可以照常執行。
     </div>
 
     <div class="lanes">

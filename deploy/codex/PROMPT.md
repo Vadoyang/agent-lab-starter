@@ -1,6 +1,8 @@
 # 貼給 ChatGPT（Codex）的指令
 
-完整的新手步驟（裝 Git、下載、開 Codex、按核准）見 `docs/新手操作手冊_GitHub與ChatGPT佈署_v1.md`。這裡只放要貼的文字。
+完整的新手步驟（準備 GB10、裝 Git、下載、開 Codex、按核准）見 `docs/新手操作手冊_GitHub與ChatGPT佈署_v2.md`。這裡只放要貼的文字。
+
+開始前，模型主機（GB10）要先照手冊 B 部分準備好：對外監聽、關閉雲端、已下載模型、防火牆只放行實驗主機。`MODEL` 要和 GB10 上 `ollama list` 顯示的名稱一字不差。
 
 使用前：
 1. 用 `git clone` 把套件下載到 Windows 主機，例如 `C:\agentlab\agent-lab-starter`（不要用 zip，否則 Codex 的修正送不回 GitHub）。

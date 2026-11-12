@@ -135,10 +135,17 @@ def main() -> None:
 
     # ---------- 模型 ----------
     runners = s.get("runners", {})
-    model_ok = bool(runners.get("governed", {}).get("model_ok"))
-    add("C11", "受治理 Agent 經模型代理連得到模型", True, model_ok,
-        {"model": runners.get("governed", {}).get("model"), "detail": runners.get("governed", {}).get("detail"),
-         "hint": "" if model_ok else "確認 .env 的 LLM_UPSTREAM、模型主機防火牆、OLLAMA_HOST=0.0.0.0 與模型已 pull"})
+    gov_r = runners.get("governed", {})
+    model_ok = bool(gov_r.get("model_ok"))
+    if model_ok:
+        hint = ""
+    elif gov_r.get("model_missing"):
+        hint = f"模型主機連得到，但還沒有這個模型：請在模型主機執行 ollama pull {gov_r.get('model')}（或改 .env 的 MODEL）"
+    else:
+        hint = "確認 .env 的 LLM_UPSTREAM、模型主機防火牆、OLLAMA_HOST=0.0.0.0"
+    add("C11", "受治理 Agent 經模型代理連得到模型，且模型已在模型主機下載", True, model_ok,
+        {"model": gov_r.get("model"), "detail": gov_r.get("detail"),
+         "model_missing": bool(gov_r.get("model_missing")), "hint": hint})
 
     # ---------- Wazuh 告警可查 ----------
     st6, stt = http("GET", f"{PORTAL}/api/stats?window=24h")

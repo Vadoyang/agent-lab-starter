@@ -197,6 +197,15 @@
       pill.className = `health-pill ${okN === total ? "ok" : "bad"}`;
       const modelOk = s.runners.governed.model_ok || s.runners.baseline.model_ok;
       $("#model-warning").hidden = modelOk || !(s.runners.governed.alive || s.runners.baseline.alive);
+      const gm = s.runners.governed;
+      const warnText = $("#model-warning-text");
+      if (warnText.dataset.default === undefined) warnText.dataset.default = warnText.innerHTML;
+      warnText.innerHTML = warnText.dataset.default;   // 預設說明（固定文字，非伺服器資料）
+      if (!modelOk && gm.model_missing) {
+        // 模型主機連得到、但還沒下載 .env 指定的模型：直接告訴使用者要在模型主機做什麼
+        $("#model-warning-text").textContent =
+          `模型主機連得到，但還沒有模型 ${gm.model}，Agent 無法作答。請在模型主機（例如 GB10）執行 ollama pull ${gm.model}，或把 .env 的 MODEL 改成已下載的名稱。`;
+      }
       syncGuard(s.guardrails);
       const revoked = (s.revoked || []).length > 0;
       $("#reset-btn").hidden = !revoked;

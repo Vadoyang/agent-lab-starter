@@ -138,7 +138,8 @@ def runner_state(target: str) -> dict:
     st = read_json(os.path.join(JOBS, target, "status.json")) or {}
     alive = bool(st) and time.time() - float(st.get("ts", 0)) < 45
     return {"alive": alive, "model_ok": bool(st.get("model_ok")) and alive, "model": st.get("model"),
-            "busy": bool(st.get("busy")), "detail": st.get("model_detail", "")}
+            "busy": bool(st.get("busy")), "detail": st.get("model_detail", ""),
+            "model_missing": bool(st.get("model_missing")) and alive}
 
 
 @app.get("/api/status")
@@ -168,7 +169,10 @@ async def status():
     svc = comps.pop("llm_proxy_svc")
     comps["llm_proxy"] = {"ok": svc["ok"] and gov["model_ok"],
                           "detail": f"代理{'在線' if svc['ok'] else '離線'}；經代理連模型：{gov['detail'] or '未知'}"}
-    comps["model"] = {"ok": gov["model_ok"] or base["model_ok"], "detail": gov.get("model") or base.get("model") or ""}
+    model_up = gov["model_ok"] or base["model_ok"]
+    comps["model"] = {"ok": model_up,
+                      "detail": (gov.get("model") or base.get("model") or "") if model_up
+                      else (gov.get("detail") or base.get("detail") or gov.get("model") or "")}
     revoked = (read_json(os.path.join(LOG_DIR, "revocations.json")) or {}).get("revoked", [])
     return {"components": comps, "runners": {"governed": gov, "baseline": base},
             "revoked": revoked, "guardrails": guardrails_state(), "ts": time.time()}
