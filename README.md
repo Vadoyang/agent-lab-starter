@@ -40,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/Vadoyang/agent-lab-starter/main/get
 安裝前，模型主機（例如 GB10 上的 Ollama）要先準備好：`OLLAMA_HOST=0.0.0.0:11434`、`OLLAMA_NO_CLOUD=1`、已 `ollama pull` 要用的模型、防火牆只放行實驗主機。
 Ollama 的 API 沒有帳號密碼，安裝程式不會問；用哪個模型由這台主機的 `.env`（`MODEL`）決定，安裝與驗收會確認模型主機已下載該模型。
 
-新手完整步驟（準備 GB10、建立 GitHub repo、讓 ChatGPT 自動佈署與修正安裝包）見 **[`docs/新手操作手冊_GitHub與ChatGPT佈署_v2.md`](docs/新手操作手冊_GitHub與ChatGPT佈署_v2.md)**。
+新手完整步驟（準備 GB10、建立 GitHub repo、讓 ChatGPT 自動佈署與修正安裝包）見 **[`docs/新手操作手冊_GitHub與ChatGPT佈署_v3.md`](docs/新手操作手冊_GitHub與ChatGPT佈署_v3.md)**。
 每個 PR 會由 `.github/workflows/pr-check.yml` 自動檢查語法與修改範圍。
 
 ### Windows 11 Pro：已下載資料夾時（WSL2＋開源 Docker Engine）
@@ -52,7 +52,11 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 .\install-windows.ps1
 # 模型在 DGX：
 .\install-windows.ps1 -InstallArgs '--ollama point --model-url http://<DGX的IP>:11434'
+# WSL 虛擬磁碟（Docker 映像與資料）放 D 槽：
+.\install-windows.ps1 -WslDir D:\agentlab\wsl -InstallArgs '--ollama point --model-url http://<DGX的IP>:11434'
 ```
+
+`-WslDir` 只對新安裝的 Ubuntu 有效（不會搬動已裝好的），會記在 `deploy-logs\wsl-dir.txt` 供之後重跑與驗收沿用；驗收項目 P12 會確認虛擬磁碟真的在那裡。
 
 腳本會安裝 WSL 與 Ubuntu 24.04、設定 mirrored 網路與常駐、開防火牆 8080／3000／8443、把環境複製進 WSL，再執行下面的 `install.sh`（Docker 選「自動安裝」）。第一次裝 WSL 需要重新開機（結束代碼 3010），開機後再執行一次。**此腳本尚未在實體 Windows 主機上驗證，遇到問題請回報。**不使用 Docker Desktop，理由見設計說明書 §6.1。
 

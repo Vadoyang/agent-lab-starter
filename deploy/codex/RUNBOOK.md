@@ -13,7 +13,8 @@
 
 | 參數 | 必填 | 說明 | 例子 |
 |---|---|---|---|
-| `REPO_DIR` | 是 | 套件在 Windows 上的資料夾（含 `install-windows.ps1`） | `C:\agentlab\agent-lab-starter` |
+| `REPO_DIR` | 是 | 套件在 Windows 上的資料夾（含 `install-windows.ps1`） | `D:\agentlab\agent-lab-starter`（放 C 槽也可以） |
+| `WSL_DIR` | 否 | WSL 虛擬磁碟（Docker 映像、Wazuh 與資料庫的資料）要放的資料夾；不給就放系統碟。必須是本機 NTFS 磁碟、不能在 `REPO_DIR` 裡面；只對新安裝的發行版有效 | `D:\agentlab\wsl` |
 | `LLM_URL` | 是 | 模型服務位址，結尾不要加斜線或 `/v1` | `http://192.168.1.50:11434` |
 | `MODEL` | 是 | 模型名稱，必須和模型主機上 `ollama list` 顯示的名稱完全一樣（需支援 tool calling） | `gemma4:31b` |
 | `HOST_IP` | 否 | 區網其他電腦連入口網站用的 IP；不給就自動偵測 | `192.168.1.20` |
@@ -37,7 +38,7 @@ git rev-parse --is-inside-work-tree; git remote get-url origin; git status --sho
 
 建立紀錄檔 `deploy-logs\deploy-log.md`，寫下參數（不含任何密碼）、版本（`git log -1 --oneline`）與開始時間。
 
-**前置條件（使用者負責，你不可登入模型主機）**：模型主機（GB10／DGX）已依 `docs/新手操作手冊_GitHub與ChatGPT佈署_v2.md` 的 B 部分準備好——
+**前置條件（使用者負責，你不可登入模型主機）**：模型主機（GB10／DGX）已依 `docs/新手操作手冊_GitHub與ChatGPT佈署_v3.md` 的 B 部分準備好——
 Ollama 設 `OLLAMA_HOST=0.0.0.0:11434` 與 `OLLAMA_NO_CLOUD=1`、已 `ollama pull <MODEL>`、防火牆只放行這台主機連 11434。
 Ollama 的 API 沒有帳號密碼；`.env` 的 `LLM_API_KEY=ollama` 是佔位字，不要向使用者索取 Ollama 帳密，也不要修改它。
 
@@ -49,11 +50,13 @@ Ollama 的 API 沒有帳號密碼；`.env` 的 `LLM_API_KEY=ollama` 是佔位字
 
 ```powershell
 cd <REPO_DIR>
-powershell -NoProfile -ExecutionPolicy Bypass -File .\verify-windows.ps1 -Stage Pre -LlmUrl <LLM_URL> -Model <MODEL>
+powershell -NoProfile -ExecutionPolicy Bypass -File .\verify-windows.ps1 -Stage Pre -LlmUrl <LLM_URL> -Model <MODEL> -WslDir <WSL_DIR>
 ```
 
+沒有 `WSL_DIR` 時拿掉 `-WslDir <WSL_DIR>`（W04 改看系統碟的空間）。
+
 讀 `deploy-report-pre.json`。每個未通過項目都有 `fix` 代碼，到 `TROUBLESHOOTING.md` §1 查。
-`W*` 大多是硬體、BIOS 或使用者決定的事：`M-BIOS`、`M-WINVER`、`M-DOCKERDESKTOP`、`M-HW`、`M-DISK` 停下來問；
+`W*` 大多是硬體、BIOS 或使用者決定的事：`M-BIOS`、`M-WINVER`、`M-DOCKERDESKTOP`、`M-HW`、`M-DISK`、`M-WSLDIR` 停下來問；
 `W10`（模型連不到）可在使用者同意下繼續，模型就緒後補驗收；`W13`（模型主機還沒有 `MODEL`）請使用者在模型主機執行
 `ollama pull <MODEL>`，或確認 `MODEL` 拼字與 `ollama list` 一致，同樣可在使用者同意下先繼續；`W06`（WSL 未安裝）是正常的。
 
@@ -67,18 +70,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\verify-windows.ps1 -Stage 
 
 ```powershell
 cd <REPO_DIR>
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1 -WslDir <WSL_DIR> `
   -InstallArgs "--yes --docker install --ollama point --model-url <LLM_URL> --model <MODEL> --host-ip <HOST_IP>"
 ```
 
-- 有 `GUARD_MODEL` 時在 `-InstallArgs` 最後加 `--guard-model <GUARD_MODEL>`；沒有 `HOST_IP` 時拿掉 `--host-ip <HOST_IP>`。
+- 有 `GUARD_MODEL` 時在 `-InstallArgs` 最後加 `--guard-model <GUARD_MODEL>`；沒有 `HOST_IP` 時拿掉 `--host-ip <HOST_IP>`；沒有 `WSL_DIR` 時拿掉 `-WslDir <WSL_DIR>`。
+- `-WslDir` 會記在 `deploy-logs\wsl-dir.txt`，之後重跑、`-Update`、驗收、修復都自動沿用，不必每次帶。
 - 第一次會下載約 8 GB 映像，可能 20 分鐘以上。不要中斷；要看進度就讀 `deploy-logs\install-windows-*.log` 的最後幾行。
 
 | 結束代碼 | 意思 | 你要做的事 |
 |---|---|---|
 | `0` | 完成 | 進第 3 階段 |
 | `3010` | 剛裝好 WSL，需要重新開機 | **停**：請使用者重新開機，開機登入後以系統管理員身分重開 Codex，貼 PROMPT.md 的「重新開機之後」 |
-| `2` | WSL 發行版需要第一次手動啟動 | **停**：請使用者從開始功能表打開「Ubuntu 24.04」建立帳號、關掉視窗，再重跑第 2 階段 |
+| `2` | 需要人手動完成一步或做決定 | **停**：照輸出最後幾行 `[!]` 的說明請使用者處理——第一次啟動 Ubuntu（有 `WSL_DIR` 時會給一行要在終端機執行的指令，不要從開始功能表開）、`WSL_DIR` 不能用、或 Ubuntu 已經裝在別處（見 `TROUBLESHOOTING.md` M-WSLDIR）；處理完重跑第 2 階段 |
 | `1` | 失敗 | **不要停**：進第 3 階段的 3B 自癒迴圈；修完後重跑同一個安裝指令 |
 
 重跑安裝是安全的：沿用已安裝的 WSL 與發行版；WSL 內已有環境時只同步程式碼（保留 `.env`、紀錄、憑證、結果），
@@ -99,7 +103,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\verify-windows.ps1 -Stage 
 
 剛裝完時 Wazuh indexer 可能還在啟動。第一次失敗且只有 C02／C12／B06 時，等 3 分鐘再跑一次。
 
-驗收內容：Windows 端（`.wslconfig`、systemd、防火牆、排程、入口網站與 Grafana 可連、WSL 內程式碼是否同步），
+驗收內容：Windows 端（`.wslconfig`、systemd、防火牆、排程、入口網站與 Grafana 可連、WSL 內程式碼是否同步、有 `WSL_DIR` 時虛擬磁碟是否真的在那裡（P12）），
 加上 WSL 內 `./lab.sh verify --with-model`：容器（16 個）、Wazuh 規則、`.env`、網路隔離、四個檢查點的護欄自我測試、
 模型代理白名單、模型連線、告警可查、良性冒煙測試，以及第三章 lab 的資料面（B09）、內容擷取（B10）、筆記授權（B11）、
 護欄規避（C14）、外部網址遮蔽（C15）。

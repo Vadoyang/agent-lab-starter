@@ -22,7 +22,7 @@
 |---|---|---|---|---|
 | W01 | Windows 組建 < 22621 | M-WINVER | 手動：請使用者跑 Windows Update 到 22H2 以上 | 重跑 `-Stage Pre` |
 | W02 | BIOS 未開虛擬化 | M-BIOS | 手動：需要人進 BIOS 開 Intel VT-x／VT-d | 重跑 `-Stage Pre` |
-| W03／W04 | 記憶體 < 48 GB／系統碟 < 80 GB | M-HW／M-DISK | 回報數字，由使用者決定 | — |
+| W03／W04 | 記憶體 < 48 GB／WSL 虛擬磁碟所在的磁碟 < 80 GB（有 `WSL_DIR` 時是那一槽，否則是系統碟） | M-HW／M-DISK | 回報數字，由使用者決定（可改用空間較大的 `WSL_DIR`，見 §4 M-WSLDIR） | — |
 | W05 | 有待重新開機的更新（warn） | — | 建議使用者先重開機；不影響繼續 | — |
 | W06 | WSL 未安裝（warn） | INSTALL | 正常，`install-windows.ps1` 會裝；第一次會要求重開機（3010） | — |
 | W07 | 已安裝 Docker Desktop | M-DOCKERDESKTOP | **要先問**：請使用者解除安裝 Docker Desktop，或放棄。不可自行解除安裝 | 重跑 `-Stage Pre` |
@@ -31,6 +31,7 @@
 | W13 | 模型主機連得到，但還沒有 `MODEL` | M13 | 見 §4 M13 第 4 點；可在使用者同意下先佈署平台 | 重跑 `-Stage Pre -LlmUrl … -Model …` |
 | W11 | 非系統管理員（warn） | M-ADMIN | 請使用者以系統管理員身分重開 Codex | — |
 | W12 | 8080／3000／8443 被占用 | M20 | 見 §4 M20 | 重跑 `-Stage Pre` |
+| W14 | `WSL_DIR` 不能用，或發行版已經裝在別處 | M-WSLDIR | 見 §4 M-WSLDIR | 重跑 `-Stage Pre … -WslDir <WSL_DIR>` |
 | P01 | WSL 發行版沒裝好 | INSTALL | 自動：重跑 RUNBOOK 第 2 階段的安裝指令（同一組參數） | `-Stage Post` |
 | P02 | `.wslconfig` 缺少必要設定 | WF4 | 自動：`.\repair-windows.ps1 -Fix WF4`（保留原記憶體值、備份原檔、重啟 WSL） | `-Stage Post` |
 | P03 | WSL 內 systemd 沒開 | WF7 | 自動：`.\repair-windows.ps1 -Fix WF7` | `-Stage Post` |
@@ -42,6 +43,7 @@
 | P08 | Grafana 連不到 | WF1 | 同 P06 | `-Stage Post` |
 | P09 | WSL 內程式碼比本資料夾舊 | WF6 | 自動：`.\install-windows.ps1 -Update`（保留 .env、紀錄、憑證） | `-Stage Post` |
 | P10 | WSL 內驗收報告讀不到 | WF1 | 自動：WF1 後重跑；仍不行直接在 WSL 執行 `./lab.sh verify` 看錯誤 | `-Stage Post` |
+| P12 | 有 `WSL_DIR`，但發行版的虛擬磁碟不在那裡（fail）或讀不到位置（warn） | M-WSLDIR | 見 §4 M-WSLDIR | `-Stage Post` |
 
 ## 2. WSL 端診斷問題（`D*`，來自 `./lab.sh diagnose`）
 
@@ -126,6 +128,20 @@
 **M04 記憶體不足**：**要先問**是否調高 `.wslconfig` 的 `memory`（64 GB 主機建議上限 44 GB）。
 
 **M09 憑證錯誤**：先確認 Windows 與 WSL 時間正確（`date`）；**要先問**才可刪除 `config/wazuh_indexer_ssl_certs/*` 後 `./lab.sh up` 重新產生。
+
+**M-WSLDIR WSL 虛擬磁碟位置（`-WslDir`）的問題**
+`-WslDir` 只決定「新安裝」的 Ubuntu 放在哪裡；指定後記在 `deploy-logs\wsl-dir.txt`，之後重跑安裝、`-Update`、驗收都會自動沿用。
+1. 位置不能用（W14 證據寫原因；安裝結束代碼 2）：回報原因，請使用者換一個資料夾——本機固定磁碟（NTFS）、不在 `REPO_DIR` 裡面、沒有壓縮或加密，
+   例如 `D:\agentlab\wsl`。換好後用新的 `WSL_DIR` 重跑第 1 階段。要改回系統碟：刪掉 `deploy-logs\wsl-dir.txt`，之後不帶 `-WslDir`。
+2. 發行版已經裝在別處（W14 證據、安裝結束代碼 2 的訊息、或 P12 fail）：**要先問**，由使用者二選一：
+   - 沿用現在的位置：刪掉 `deploy-logs\wsl-dir.txt`，之後不帶 `-WslDir`。
+   - 搬到 `WSL_DIR`：會動到發行版本身，**一定要使用者同意後才做**（`AGENTS.md` 把 `wsl --unregister` 列為要先問）。
+     還沒佈署成功、裡面沒有要留的資料：`wsl --unregister Ubuntu-24.04`，再重跑第 2 階段（會用 `WSL_DIR` 重新安裝）。
+     已經有資料：`wsl --shutdown` → `wsl --export Ubuntu-24.04 <WSL_DIR 所在磁碟上的備份檔.tar>` →
+     `wsl --unregister Ubuntu-24.04` → `wsl --import Ubuntu-24.04 <WSL_DIR> <備份檔.tar>` → 重跑第 2 階段、驗收。
+     微軟文件提醒：`--unregister` 後該發行版的資料、設定與軟體會永久消失，匯出檔確認存在之前不要執行。
+3. P12 是 warn（讀不到位置）：在 Windows 執行 `Get-ChildItem HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss | Get-ItemProperty | Select DistributionName, BasePath`，
+   把結果回報給使用者確認，不影響整體 PASS。
 
 **INSTALL**：重跑 RUNBOOK 第 2 階段的安裝指令（同一組參數）；重跑是安全的，會沿用 `.env`。
 

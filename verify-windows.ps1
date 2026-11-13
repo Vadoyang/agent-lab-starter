@@ -24,11 +24,17 @@
 .PARAMETER WithModel
   Post 時另外跑一次良性冒煙測試（需要模型在線）。
 
+.PARAMETER WslDir
+  WSL 虛擬磁碟要放（或已經放）的資料夾，例如 D:\agentlab\wsl；與 install-windows.ps1 -WslDir 相同。
+  不給時沿用 install-windows.ps1 記下的 deploy-logs\wsl-dir.txt；兩者都沒有＝系統碟。
+  Pre：W04 檢查這個磁碟的剩餘空間，W14 檢查這個位置能不能用；Post：P12 確認發行版真的裝在這裡。
+
 .PARAMETER Report
   報告 JSON 的輸出路徑，預設寫在本資料夾：deploy-report-<stage>.json。
 
 .EXAMPLE
   .\verify-windows.ps1 -Stage Pre -LlmUrl http://192.168.1.50:11434 -Model gemma4:31b
+  .\verify-windows.ps1 -Stage Pre -LlmUrl http://192.168.1.50:11434 -Model gemma4:31b -WslDir D:\agentlab\wsl
   .\verify-windows.ps1 -Stage Post -WithModel
 
 .NOTES
@@ -41,6 +47,7 @@ param(
   [string]$Model = "",
   [switch]$WithModel,
   [string]$Distro = "Ubuntu-24.04",
+  [string]$WslDir = "",
   [string]$Report = ""
 )
 
@@ -50,14 +57,21 @@ $LinuxDir = "/root/agent-lab-starter"
 $Ports = @(8080, 3000, 8443)
 $checks = New-Object System.Collections.ArrayList
 if (-not $Report) { $Report = Join-Path $PSScriptRoot ("deploy-report-" + $Stage.ToLower() + ".json") }
+# WSL 虛擬磁碟位置：參數優先，否則沿用 install-windows.ps1 記下的位置
+$WslDirMarker = Join-Path $PSScriptRoot "deploy-logs\wsl-dir.txt"
+$wslDirSource = "參數 -WslDir"
+if (-not $WslDir -and (Test-Path -LiteralPath $WslDirMarker)) {
+  $WslDir = (Get-Content -LiteralPath $WslDirMarker -Raw).Trim()
+  $wslDirSource = "deploy-logs\wsl-dir.txt"
+}
 
 # 每個檢查未通過時對應的修法代碼（repair-windows.ps1 依此自動修；M 開頭＝需要人）
 #   WF*＝Windows 端可自動修；WSL＝交給 WSL 內 ./lab.sh repair auto；M*＝需要人
 $FixMap = @{
   W01 = "M-WINVER"; W02 = "M-BIOS"; W03 = "M-HW"; W04 = "M-DISK"; W06 = "INSTALL"; W07 = "M-DOCKERDESKTOP"
-  W09 = "M19"; W10 = "M13"; W11 = "M-ADMIN"; W12 = "M20"; W13 = "M13"
+  W09 = "M19"; W10 = "M13"; W11 = "M-ADMIN"; W12 = "M20"; W13 = "M13"; W14 = "M-WSLDIR"
   P01 = "INSTALL"; P02 = "WF4"; P03 = "WF7"; P04 = "WF2"; P05 = "WF3"; P06 = "WF1"; P07 = "WF2"; P08 = "WF1"
-  P09 = "WF6"; P10 = "WF1"; P11 = "WF5"
+  P09 = "WF6"; P10 = "WF1"; P11 = "WF5"; P12 = "M-WSLDIR"
   B07 = "M16"; C11 = "M13"; C13 = "M13"
   C05 = "M21"; C07 = "M21"; C08 = "M21"; C09 = "M21"; C10 = "M21"; C14 = "M21"; C15 = "M21"; B10 = "M21"; B11 = "M21"
 }
@@ -101,6 +115,47 @@ function Test-Http($url) {
     return @{ ok = ($r.StatusCode -lt 400); status = $r.StatusCode }
   } catch { return @{ ok = $false; status = $_.Exception.Message } }
 }
+# ---- WSL 虛擬磁碟位置：與 install-windows.ps1 相同的判斷 ----
+function Get-NormPath([string]$p) {
+  $f = [IO.Path]::GetFullPath($p)
+  if ($f.Length -gt 3) { $f = $f.TrimEnd('\') }   # 磁碟根目錄保留成 D:\
+  return $f
+}
+function Test-UnderDir([string]$path, [string]$dir) {
+  if (-not $path -or -not $dir) { return $false }
+  $p = Get-NormPath $path
+  $d = Get-NormPath $dir
+  return ($p -ieq $d) -or $p.StartsWith($d.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+function Get-DistroBasePath([string]$name) {
+  $root = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss"
+  if (-not (Test-Path $root)) { return $null }
+  foreach ($k in @(Get-ChildItem $root -ErrorAction SilentlyContinue)) {
+    $p = Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue
+    if ($p -and $p.DistributionName -eq $name -and $p.BasePath) { return ([string]$p.BasePath -replace '^\\\\\?\\', '') }
+  }
+  return $null
+}
+function Test-WslDirTarget([string]$dir) {
+  # 回傳 $null＝可以用；否則回傳不能用的原因
+  if ($dir -notmatch '^[A-Za-z]:[\\/]') { return "要寫完整路徑，例如 D:\agentlab\wsl（目前是：$dir）" }
+  $full = Get-NormPath $dir
+  $drv = $full.Substring(0, 2).ToUpper()
+  $ld = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$drv'" -ErrorAction SilentlyContinue
+  if (-not $ld) { return "找不到 $drv 磁碟" }
+  if ([int]$ld.DriveType -ne 3) { return "$drv 不是本機固定磁碟（隨身碟、網路磁碟不能放 WSL 虛擬磁碟）" }
+  if ($ld.FileSystem -notin @("NTFS", "ReFS")) { return "$drv 的檔案系統是 $($ld.FileSystem)；WSL 虛擬磁碟要放在 NTFS 磁碟" }
+  if (Test-UnderDir $full $PSScriptRoot) { return "不能放在套件資料夾（$PSScriptRoot）裡面：安裝時會把整個套件資料夾複製進 WSL" }
+  $probe = $full
+  while ($probe -and -not (Test-Path -LiteralPath $probe)) { $probe = Split-Path $probe -Parent }
+  if ($probe) {
+    $attr = (Get-Item -LiteralPath $probe -Force).Attributes
+    if ($attr -band ([IO.FileAttributes]::Compressed -bor [IO.FileAttributes]::Encrypted)) {
+      return "$probe 是壓縮或加密的資料夾；WSL 虛擬磁碟不能放在壓縮或加密的位置"
+    }
+  }
+  return $null
+}
 
 $isAdmin = $false
 try {
@@ -119,9 +174,22 @@ if ($Stage -eq "Pre") {
   Add-Check "W02" "BIOS 已開啟虛擬化（或 Hyper-V 已在執行）" $true (PF $virt) "VirtualizationFirmwareEnabled=$($cpu.VirtualizationFirmwareEnabled) HypervisorPresent=$($cs.HypervisorPresent) CPU=$($cpu.Name) cores=$($cpu.NumberOfCores) threads=$($cpu.NumberOfLogicalProcessors)"
   $memGB = [math]::Round($os.TotalVisibleMemorySize / 1MB)
   Add-Check "W03" "記憶體 ≥ 48 GB（WSL 分 40 GB，Windows 留其餘）" $true (PF ($memGB -ge 48)) "約 $memGB GB"
-  $drive = Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':')) -ErrorAction SilentlyContinue
+  # WSL 虛擬磁碟（Docker 映像與資料）所在的磁碟：已安裝的位置 → -WslDir → 系統碟
+  $base = Get-DistroBasePath $Distro
+  if ($base -and $base -match '^[A-Za-z]:') { $diskOf = $base; $basis = "已安裝的 $Distro（$base）" }
+  elseif ($WslDir -and $WslDir -match '^[A-Za-z]:') { $diskOf = $WslDir; $basis = "WslDir（$wslDirSource）" }
+  else { $diskOf = $env:SystemDrive; $basis = "系統碟（未指定 WslDir）" }
+  $dl = $diskOf.Substring(0, 1).ToUpper()
+  $drive = Get-PSDrive -Name $dl -ErrorAction SilentlyContinue
   $freeGB = if ($drive) { [math]::Round($drive.Free / 1GB) } else { 0 }
-  Add-Check "W04" "系統碟剩餘空間 ≥ 80 GB（WSL 虛擬磁碟與容器映像）" $true (PF ($freeGB -ge 80)) "$($env:SystemDrive) 剩 $freeGB GB"
+  Add-Check "W04" "WSL 虛擬磁碟所在的磁碟剩餘空間 ≥ 80 GB（Docker 映像與 Wazuh、資料庫的資料）" $true (PF ($freeGB -ge 80)) "$($dl): 剩 $freeGB GB；依據：$basis"
+  if ($WslDir) {
+    $why = Test-WslDirTarget $WslDir
+    if (-not $why -and $base -and -not (Test-UnderDir $base $WslDir)) {
+      $why = "$Distro 已經裝在 $base；-WslDir 只對新安裝有效，不會搬動已安裝的發行版"
+    }
+    Add-Check "W14" "WSL 虛擬磁碟位置可以用（$WslDir：本機 NTFS 磁碟、不在套件資料夾內、沒有壓縮或加密）" $true (PF (-not $why)) $(if ($why) { "$why（來源：$wslDirSource）" } else { "可以用（來源：$wslDirSource）" })
+  }
   $pending = (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") -or
              (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired")
   Add-Check "W05" "目前沒有待重新開機的更新" $false $(if ($pending) { "warn" } else { "pass" }) "RebootPending=$pending"
@@ -166,6 +234,15 @@ else {
   # ---------------------------------------------------------------- 佈署後驗收
   $distros = Get-Distros
   Add-Check "P01" "WSL 發行版 $Distro 已安裝" $true (PF ($distros -contains $Distro)) "distros=$($distros -join ',')"
+  $base = Get-DistroBasePath $Distro
+  $baseText = if ($base) { $base } else { "讀不到（登錄檔沒有這個發行版的位置）" }
+  if ($WslDir) {
+    # 讀不到位置＝無法確認（warn，不擋整體結果）；讀得到但不在指定位置＝fail
+    $res = if (-not $base) { "warn" } elseif (Test-UnderDir $base $WslDir) { "pass" } else { "fail" }
+    Add-Check "P12" "WSL 虛擬磁碟在指定的位置（$WslDir）" $true $res "實際位置：$baseText；指定來源：$wslDirSource"
+  } else {
+    Add-Check "P12" "WSL 虛擬磁碟位置（未指定 WslDir，只記錄）" $false "skip" "實際位置：$baseText"
+  }
   $cfgPath = Join-Path $env:USERPROFILE ".wslconfig"
   $cfg = if (Test-Path $cfgPath) { Get-Content $cfgPath -Raw } else { "" }
   Add-Check "P02" ".wslconfig 設定 mirrored 網路、記憶體上限、閒置不關機" $true `
