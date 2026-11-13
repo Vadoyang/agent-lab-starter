@@ -1,11 +1,11 @@
 # 貼給 ChatGPT（Codex）的指令
 
-完整的新手步驟（準備 GB10、裝 Git、下載、開 Codex、按核准）見 `docs/新手操作手冊_GitHub與ChatGPT佈署_v2.md`。這裡只放要貼的文字。
+完整的新手步驟（準備 GB10、裝 Git、下載、開 Codex、按核准）見 `docs/新手操作手冊_GitHub與ChatGPT佈署_v3.md`。這裡只放要貼的文字。
 
 開始前，模型主機（GB10）要先照手冊 B 部分準備好：對外監聽、關閉雲端、已下載模型、防火牆只放行實驗主機。`MODEL` 要和 GB10 上 `ollama list` 顯示的名稱一字不差。
 
 使用前：
-1. 用 `git clone` 把套件下載到 Windows 主機，例如 `C:\agentlab\agent-lab-starter`（不要用 zip，否則 Codex 的修正送不回 GitHub）。
+1. 用 `git clone` 把套件下載到 Windows 主機，例如 `D:\agentlab\agent-lab-starter`（放 C 槽也可以；不要用 zip，否則 Codex 的修正送不回 GitHub）。
 2. 以系統管理員身分開啟 ChatGPT（Codex）桌面程式，「Add new project」選這個資料夾，輸入框下方選「Ask for approval」。
 3. 把方框裡的 `<…>` 換成實際值，整段貼上。
 
@@ -21,7 +21,8 @@
 - deploy/codex/TROUBLESHOOTING.md（每個錯誤代碼的意思與修法）
 
 參數：
-- REPO_DIR = <C:\agentlab\agent-lab-starter>
+- REPO_DIR = <D:\agentlab\agent-lab-starter>
+- WSL_DIR = <D:\agentlab\wsl；WSL 虛擬磁碟（Docker 映像與資料）要放的資料夾，留空＝放系統碟>
 - LLM_URL = <http://DGX的IP:11434>
 - MODEL = <模型名稱，例如 gemma4:31b>
 - HOST_IP = <這台主機的區網 IP；不確定就寫「請列出候選讓我選」>
@@ -47,7 +48,7 @@
 我已經重新開機。請重新讀 AGENTS.md、deploy/codex/RUNBOOK.md、deploy/codex/TROUBLESHOOTING.md，
 先讀 deploy-logs\deploy-log.md 了解上次做到哪裡，再從第 2 階段重跑同一個安裝指令，參數與上次相同；
 之後照常進行驗收、自癒與第 5 階段：
-REPO_DIR = <…>  LLM_URL = <…>  MODEL = <…>  HOST_IP = <…>  GUARD_MODEL = <…>
+REPO_DIR = <…>  WSL_DIR = <…>  LLM_URL = <…>  MODEL = <…>  HOST_IP = <…>  GUARD_MODEL = <…>
 ```
 
 ## 三、環境出問題時（已經佈署過）

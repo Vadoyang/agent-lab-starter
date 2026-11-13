@@ -8,7 +8,7 @@
     1. 檢查 Windows 版本（需要 Windows 11 22H2 以上，才能用 mirrored 網路模式）
     2. 安裝或更新 WSL（第一次安裝需要重新開機，開機後再執行一次本腳本）
     3. 寫入 %USERPROFILE%\.wslconfig：記憶體上限、mirrored 網路、VM 與發行版不自動關閉
-    4. 安裝 Ubuntu 24.04，開啟 systemd（Docker 服務需要）
+    4. 安裝 Ubuntu 24.04（可用 -WslDir 把虛擬磁碟放到別的磁碟，例如 D 槽），開啟 systemd（Docker 服務需要）
     5. 開 Hyper-V 防火牆的入口網站、Grafana、Wazuh 三個埠，讓區網其他電腦連得到
     6. 把本資料夾複製進 WSL 的 Linux 檔案系統（放在 /mnt/c 下效能差，且權限不對）
     7. 在 WSL 裡執行 install.sh（Docker 選「自動安裝」：裝的是開源 Docker Engine，不是 Docker Desktop）
@@ -22,6 +22,13 @@
 
 .PARAMETER Memory
   給 WSL 虛擬機的記憶體上限，預設 40GB（64 GB 主機留約 24 GB 給 Windows）。
+
+.PARAMETER WslDir
+  WSL 發行版的虛擬磁碟（ext4.vhdx）要放的資料夾，例如 D:\agentlab\wsl。
+  Docker 映像、Wazuh 與資料庫的資料都在這個虛擬磁碟裡，是整套環境最占空間的部分。
+  留空＝Windows 的預設位置（系統碟）。只對「新安裝」的發行版有效，不會搬動已經裝好的發行版。
+  必須是本機固定磁碟（NTFS 或 ReFS）上的完整路徑，不能放在本資料夾裡面，也不能是壓縮或加密的資料夾。
+  指定後記在 deploy-logs\wsl-dir.txt：重開機後重跑、-Update、驗收都會自動沿用。要改回系統碟，刪掉這個檔再重跑。
 
 .PARAMETER InstallArgs
   轉交給 install.sh 的參數，例如 '--ollama point --model-url http://192.168.1.50:11434'。
@@ -44,16 +51,21 @@
 .EXAMPLE
   .\install-windows.ps1 -InstallArgs '--ollama point --model-url http://192.168.1.50:11434'
 
+.EXAMPLE
+  # WSL 虛擬磁碟放 D 槽（安裝包資料夾本身也建議放 D 槽，例如 D:\agentlab\agent-lab-starter）
+  .\install-windows.ps1 -WslDir D:\agentlab\wsl -InstallArgs '--ollama point --model-url http://192.168.1.50:11434'
+
 .NOTES
-  結束代碼：0＝完成；3010＝需要重新開機後重跑；2＝需要人手動完成一步後重跑；1＝失敗。
+  結束代碼：0＝完成；3010＝需要重新開機後重跑；2＝需要人手動完成一步或做決定後重跑（看最後的 [!] 說明）；1＝失敗。
   自動化佈署（例如 Codex）請帶齊不互動參數，例如：
-    -InstallArgs '--yes --docker install --ollama point --model-url http://<DGX>:11434 --model <模型> --host-ip <本機IP>'
+    -WslDir <資料夾，可省略> -InstallArgs '--yes --docker install --ollama point --model-url http://<DGX>:11434 --model <模型> --host-ip <本機IP>'
   本檔需存成 UTF-8（含 BOM），Windows PowerShell 5.1 才能正確顯示中文。
   標示〔待實機驗證〕的步驟尚未在實體 Windows 主機上驗證過。
 #>
 param(
   [string]$Distro = "Ubuntu-24.04",
   [string]$Memory = "40GB",
+  [string]$WslDir = "",
   [string]$InstallArgs = "",
   [switch]$Reinstall,
   [switch]$Update,
@@ -69,6 +81,7 @@ try { Start-Transcript -Path $Transcript -Append | Out-Null } catch { }
 $env:WSL_UTF8 = "1"          # 讓 wsl.exe 輸出 UTF-8（舊版是 UTF-16，字串比對會失敗）
 $Ports = @(8080, 3000, 8443)  # 入口網站、Grafana、Wazuh dashboard
 $LinuxDir = "/root/agent-lab-starter"
+$WslDirMarker = Join-Path $LogDir "wsl-dir.txt"   # 記住 -WslDir，重開機後重跑與驗收時沿用
 
 function Step($t) { Write-Host ""; Write-Host "== $t" -ForegroundColor Cyan }
 function Ok($t)   { Write-Host "  [OK] $t" -ForegroundColor Green }
@@ -110,6 +123,56 @@ function Get-Distros {
   return @($raw | ForEach-Object { ($_ -replace "`0", "").Trim() } | Where-Object { $_ })
 }
 
+# ---- WSL 虛擬磁碟位置（-WslDir）：與 verify-windows.ps1 相同的判斷 ----
+function Get-NormPath([string]$p) {
+  $f = [IO.Path]::GetFullPath($p)
+  if ($f.Length -gt 3) { $f = $f.TrimEnd('\') }   # 磁碟根目錄保留成 D:\
+  return $f
+}
+function Test-UnderDir([string]$path, [string]$dir) {
+  if (-not $path -or -not $dir) { return $false }
+  $p = Get-NormPath $path
+  $d = Get-NormPath $dir
+  return ($p -ieq $d) -or $p.StartsWith($d.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+function Get-DistroBasePath([string]$name) {
+  # WSL 在登錄檔記錄每個發行版的虛擬磁碟資料夾（BasePath）
+  $root = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss"
+  if (-not (Test-Path $root)) { return $null }
+  foreach ($k in @(Get-ChildItem $root -ErrorAction SilentlyContinue)) {
+    $p = Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue
+    if ($p -and $p.DistributionName -eq $name -and $p.BasePath) { return ([string]$p.BasePath -replace '^\\\\\?\\', '') }
+  }
+  return $null
+}
+function Test-WslDirTarget([string]$dir) {
+  # 回傳 $null＝可以用；否則回傳不能用的原因
+  if ($dir -notmatch '^[A-Za-z]:[\\/]') { return "要寫完整路徑，例如 D:\agentlab\wsl（目前是：$dir）" }
+  $full = Get-NormPath $dir
+  $drv = $full.Substring(0, 2).ToUpper()
+  $ld = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$drv'" -ErrorAction SilentlyContinue
+  if (-not $ld) { return "找不到 $drv 磁碟" }
+  if ([int]$ld.DriveType -ne 3) { return "$drv 不是本機固定磁碟（隨身碟、網路磁碟不能放 WSL 虛擬磁碟）" }
+  if ($ld.FileSystem -notin @("NTFS", "ReFS")) { return "$drv 的檔案系統是 $($ld.FileSystem)；WSL 虛擬磁碟要放在 NTFS 磁碟" }
+  if (Test-UnderDir $full $PSScriptRoot) { return "不能放在套件資料夾（$PSScriptRoot）裡面：安裝時會把整個套件資料夾複製進 WSL" }
+  $probe = $full
+  while ($probe -and -not (Test-Path -LiteralPath $probe)) { $probe = Split-Path $probe -Parent }
+  if ($probe) {
+    $attr = (Get-Item -LiteralPath $probe -Force).Attributes
+    if ($attr -band ([IO.FileAttributes]::Compressed -bor [IO.FileAttributes]::Encrypted)) {
+      return "$probe 是壓縮或加密的資料夾；WSL 虛擬磁碟不能放在壓縮或加密的位置"
+    }
+  }
+  return $null
+}
+function Stop-ForHuman($lines) {
+  # 需要人決定或手動做一步：印出說明後以結束代碼 2 結束（自動化佈署據此停下來問人）
+  foreach ($l in $lines) { Warn $l }
+  Write-Host "  完整紀錄：$Transcript"
+  try { Stop-Transcript | Out-Null } catch { }
+  exit 2
+}
+
 # =============================================================================
 Step "第 1 步：檢查 Windows 版本"
 # =============================================================================
@@ -124,6 +187,26 @@ $memGB = [math]::Round($os.TotalVisibleMemorySize / 1MB)
 Info "CPU：$($cpu.Name)（$($cpu.NumberOfCores) 核 / $($cpu.NumberOfLogicalProcessors) 執行緒）；記憶體：約 $memGB GB"
 if ($memGB -lt 16) { Warn "記憶體少於 16 GB，Wazuh 加上本機模型可能跑不動。" }
 Ok "Windows 版本符合。"
+
+# WSL 虛擬磁碟位置：沒給 -WslDir 時沿用上次記下的位置（例如重開機後重跑、-Update、修復流程）
+if (-not $WslDir -and (Test-Path -LiteralPath $WslDirMarker)) {
+  $WslDir = (Get-Content -LiteralPath $WslDirMarker -Raw).Trim()
+  if ($WslDir) { Info "沿用上次指定的 WSL 虛擬磁碟位置：$WslDir（記在 $WslDirMarker）" }
+}
+if ($WslDir) {
+  $why = Test-WslDirTarget $WslDir
+  if ($why) {
+    Stop-ForHuman @(
+      "-WslDir 不能用：$why",
+      "請換一個資料夾（本機 NTFS 磁碟、不在套件資料夾裡、沒有壓縮或加密）後重跑；",
+      "或改回系統碟：刪掉 $WslDirMarker，重跑時不要加 -WslDir。詳見 deploy\codex\TROUBLESHOOTING.md 的 M-WSLDIR。")
+  }
+  $WslDir = Get-NormPath $WslDir
+  [System.IO.File]::WriteAllText($WslDirMarker, $WslDir, (New-Object System.Text.UTF8Encoding $false))
+  Ok "WSL 虛擬磁碟位置：$WslDir"
+} else {
+  Info "WSL 虛擬磁碟位置：Windows 預設（系統碟 $env:SystemDrive）。要放別的磁碟請加 -WslDir，例如 -WslDir D:\agentlab\wsl。"
+}
 
 # =============================================================================
 Step "第 2 步：安裝或更新 WSL"
@@ -170,17 +253,41 @@ Ok "已寫入 .wslconfig（memory=$Memory、mirrored、不自動關閉）。"
 Step "第 4 步：安裝 $Distro 並開啟 systemd"
 # =============================================================================
 if ((Get-Distros) -notcontains $Distro) {
-  Info "安裝 $Distro（第一次需要下載，約數百 MB）…"
-  & wsl.exe --install --distribution $Distro --no-launch
-  if ($LASTEXITCODE -ne 0) { Die "安裝 $Distro 失敗。可以手動執行：wsl --install --distribution $Distro" }
+  if ($WslDir) {
+    # 〔待實機驗證〕--location 是微軟文件列出的 wsl --install 選項（指定發行版安裝資料夾）
+    New-Item -ItemType Directory -Force -Path $WslDir | Out-Null
+    Info "安裝 $Distro 到 $WslDir（第一次需要下載，約數百 MB）…"
+    & wsl.exe --install --distribution $Distro --location $WslDir --no-launch
+    if ($LASTEXITCODE -ne 0) {
+      Die "安裝 $Distro 到 $WslDir 失敗。若訊息說不認得 --location，代表 WSL 太舊：執行 wsl --update 後重跑。手動指令：wsl --install --distribution $Distro --location `"$WslDir`""
+    }
+  } else {
+    Info "安裝 $Distro（第一次需要下載，約數百 MB）…"
+    & wsl.exe --install --distribution $Distro --no-launch
+    if ($LASTEXITCODE -ne 0) { Die "安裝 $Distro 失敗。可以手動執行：wsl --install --distribution $Distro" }
+  }
   Start-Sleep -Seconds 3
 }
 if ((Get-Distros) -notcontains $Distro) {
   # 〔待實機驗證〕部分版本的 --no-launch 不會註冊發行版，需要先啟動一次
-  Warn "還看不到 $Distro。請在開始功能表打開「Ubuntu 24.04」完成第一次設定（建立帳號），關掉視窗後再執行一次本腳本。"
-  exit 2      # 2＝需要人手動完成一個步驟後重跑
+  if ($WslDir) {
+    # 從開始功能表打開可能會裝到系統碟，所以改請人在終端機用同一個位置裝
+    Stop-ForHuman @(
+      "還看不到 $Distro。請開「終端機」執行：wsl --install --distribution $Distro --location `"$WslDir`"",
+      "依畫面建立英文使用者名稱與密碼，關掉視窗後再執行一次本腳本。（不要從開始功能表打開 Ubuntu，可能會裝到系統碟）")
+  }
+  Stop-ForHuman @("還看不到 $Distro。請在開始功能表打開「Ubuntu 24.04」完成第一次設定（建立帳號），關掉視窗後再執行一次本腳本。")
 }
 Ok "$Distro 已安裝。"
+$base = Get-DistroBasePath $Distro
+if ($base) { Info "$Distro 的虛擬磁碟資料夾：$base" }
+elseif ($WslDir) { Warn "讀不到 $Distro 的虛擬磁碟位置（登錄檔），無法確認是否在 $WslDir；裝完請看驗收項目 P12。" }
+if ($WslDir -and $base -and -not (Test-UnderDir $base $WslDir)) {
+  Stop-ForHuman @(
+    "$Distro 裝在 $base，不在指定的 $WslDir。-WslDir 只對新安裝有效，不會搬動已經裝好的發行版。",
+    "請使用者決定：(1) 沿用現在的位置：刪掉 $WslDirMarker，重跑時不要加 -WslDir；",
+    "(2) 搬到指定位置：會動到發行版本身，需要人處理，步驟見 deploy\codex\TROUBLESHOOTING.md 的 M-WSLDIR。")
+}
 
 $tmp = Join-Path $env:TEMP "agentlab-wslconf.sh"
 Write-LfFile $tmp @'
@@ -317,6 +424,8 @@ Write-Host "  入口網站（從這裡開始）  http://localhost:8080   區網�
 Write-Host "  Grafana 戰情室          http://localhost:3000"
 Write-Host "  Wazuh                   https://localhost:8443（自簽憑證）"
 Write-Host ""
+$base = Get-DistroBasePath $Distro
+if ($base) { Info "WSL 虛擬磁碟（Docker 映像與資料）：$base" }
 Info "操作 PIN 與帳密見上方 install.sh 的完成畫面，或在 WSL 裡看 $LinuxDir/.env。"
 Info "日常管理：wsl -d $Distro -u root，然後 cd $LinuxDir; ./lab.sh status"
 Info "完整紀錄：$Transcript"
