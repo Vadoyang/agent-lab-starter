@@ -17,15 +17,18 @@
     <span>AI Agent 治理藍隊實驗環境</span>
   </a>
   <nav class="sections" aria-label="頁面章節">
+    <a href="#guide">展示導覽</a>
     <a href="#console">實驗操作台</a>
     <a href="#architecture">架構</a>
     <a href="#components">元件</a>
     <a href="#principles">設計理念</a>
     <a href="#experiments">實驗</a>
+    <a href="#results">實驗結果</a>
     <a href="#monitoring">監控</a>
+    <a href="#acceptance">環境驗收</a>
   </nav>
   <div class="top-actions">
-    <a class="health-pill" href="#architecture" id="health-pill" title="各元件健康狀態">檢查中</a>
+    <a class="health-pill" href="#guide" id="health-pill" title="各元件健康狀態；點選看展示前檢查">檢查中</a>
     <a class="ext" id="link-grafana" target="_blank" rel="noopener">Grafana 戰情室</a>
     <a class="ext" id="link-wazuh" target="_blank" rel="noopener">Wazuh</a>
     <button class="theme" id="theme-toggle" type="button" aria-label="切換深淺色">深色</button>
@@ -58,7 +61,40 @@
         </dl>
       </article>
     </div>
-    <p class="proof-note" id="proof-note">計數來自本環境的紀錄（自這次部署起），每 8 秒更新。</p>
+    <div class="proof-foot">
+      <p class="proof-note" id="proof-note">計數來自本環境的紀錄（自這次部署起），每 8 秒更新。</p>
+      <button type="button" class="linkish" id="proof-scope">只算本場展示</button>
+    </div>
+  </section>
+
+  <!-- ============ 展示導覽：展示前檢查、展示順序、每一項驗證在哪裡 ============ -->
+  <section id="guide" class="guide">
+    <div class="section-head">
+      <h2>展示導覽</h2>
+      <p>展示前先看左邊的檢查，全部就緒再開始。右邊是建議的展示順序；按「開始展示」後，畫面下方會出現提詞列，每一步都寫好要說什麼、請觀眾看哪裡。最下面列出這套環境的每一項驗證，以及各自在哪裡看。</p>
+    </div>
+    <div class="guide-grid">
+      <div class="ready" aria-labelledby="ready-title">
+        <h3 id="ready-title">展示前檢查</h3>
+        <p class="ready-verdict" id="ready-verdict" role="status" aria-live="polite">檢查中…</p>
+        <ul class="ready-list" id="ready-list"></ul>
+      </div>
+      <div class="script" aria-labelledby="script-title">
+        <div class="script-head">
+          <h3 id="script-title">建議的展示順序（約 8 分鐘）</h3>
+          <button type="button" class="btn primary" id="present-start">開始展示</button>
+        </div>
+        <ol class="script-steps" id="script-steps"></ol>
+      </div>
+    </div>
+
+    <h3 class="where-title">每一項驗證在哪裡看</h3>
+    <div class="where-wrap">
+      <table class="where">
+        <thead><tr><th scope="col">驗證什麼</th><th scope="col">證明</th><th scope="col">在哪裡看</th><th scope="col">目前結果</th></tr></thead>
+        <tbody id="where-body"><tr><td colspan="4" class="muted">讀取中…</td></tr></tbody>
+      </table>
+    </div>
   </section>
 
   <!-- ============ 實驗操作台：同一個問題，兩個 Agent ============ -->
@@ -282,16 +318,33 @@
   <section id="experiments" class="experiments">
     <div class="section-head">
       <h2>可以做哪些實驗</h2>
-      <p>考卷分三組：正常工作確認治理不會妨礙分析；鐵律一與鐵律二各有數種攻擊情境。每一題都可以同時讓兩個 Agent 作答，結果會出現在上方的實驗操作台。搭配護欄開關，可以比較三種條件：未治理、只有 Gateway、Gateway 加護欄。</p>
+      <p>考卷分三組：正常工作確認治理不會妨礙分析；鐵律一與鐵律二各有數種攻擊情境。每一題都可以同時讓兩個 Agent 作答，結果會出現在上方的實驗操作台。標有「只考受治理組」的題目（第三章 lab 的 A7–A11）用到只有受治理組才有的工具，對照組不考。搭配護欄開關，可以比較三種條件：未治理、只有 Gateway、Gateway 加護欄。</p>
     </div>
     <div class="exp-groups" id="exp-groups"><p class="muted">載入題目中…</p></div>
+  </section>
+
+  <!-- ============ 實驗結果：考卷批次統計 ============ -->
+  <section id="results" class="results">
+    <div class="section-head">
+      <h2>實驗結果：三種條件的攻擊成功率</h2>
+      <p>單次展示的結果會受模型隨機性影響，結論要看批次數據：同一份考卷重複作答，比較未治理、只有 Gateway、Gateway 加護欄三種條件。攻擊題的達成率越低越好，正常工作題越高越好；括號內是 95% 信賴區間（Wilson）。</p>
+    </div>
+    <div id="results-body"><p class="muted">讀取考卷結果中…</p></div>
+    <div class="howto">
+      <h3>怎麼產生這些數據</h3>
+      <p>在 WSL（Ubuntu）的安裝資料夾執行下面兩行，每一題重複 5 次。第二行跑的是受治理組：護欄開啟時記為「Gateway＋護欄」；在實驗操作台把護欄關掉再跑一次，記為「只有 Gateway」。跑完後這一區會自動更新。</p>
+      <pre><code>docker compose run --rm agent-baseline python run_tests.py --repeat 5
+docker compose run --rm agent-governed python run_tests.py --repeat 5</code></pre>
+      <p class="small muted">在 Windows 主機上，可以在系統管理員 PowerShell 前面加 <code>wsl -d Ubuntu-24.04 -u root -- bash -lc "cd /root/agent-lab-starter &amp;&amp; …"</code> 執行。整份考卷連續跑時，SOAR 可能中途把受治理 Agent 斷線，之後幾題守住的原因會變成斷線；要逐題比較時，請在題目之間按「解除受治理 Agent 的斷線」。</p>
+    </div>
   </section>
 
   <!-- ============ 監控 ============ -->
   <section id="monitoring" class="monitoring">
     <div class="section-head">
       <h2>監控</h2>
-      <p>左邊是 Wazuh 最近 24 小時的偵測分類，右邊是即時事件流。完整的大螢幕戰情室在 Grafana，原始告警的每個欄位可以在 Wazuh 查詢 <code>rule.groups:agentlab</code>。</p>
+      <p>左邊是 Wazuh 最近 24 小時的偵測分類，右邊是即時事件流。完整的大螢幕戰情室在 Grafana；每一筆原始告警的完整欄位可以在 Wazuh 查看：<a id="wazuh-all" target="_blank" rel="noopener">開啟 Wazuh 的治理告警（<code>rule.groups:agentlab</code>，最近 24 小時）</a>。點偵測分類的名稱，只看那一類。</p>
+      <p class="small muted">Wazuh 使用自簽憑證與示範帳密（admin／SecretPassword），第一次開啟要在瀏覽器按「繼續前往」再登入；全新安裝後若連結打開是空白，先登入 Wazuh 首頁一次，讓它建立索引樣式。</p>
     </div>
     <div class="mon-grid">
       <div class="detections">
@@ -312,7 +365,37 @@
       <iframe id="grafana-iframe" title="Grafana AI Agent 治理藍隊戰情室" loading="lazy"></iframe>
     </div>
   </section>
+
+  <!-- ============ 環境驗收 ============ -->
+  <section id="acceptance" class="acceptance">
+    <div class="section-head">
+      <h2>環境驗收</h2>
+      <p>每次佈署或更新後都要執行驗收：逐項檢查環境有沒有裝對，每一項都留下證據，必要項全部通過才算佈署完成。主機層（B）在 WSL 主機上檢查容器、偵測規則與資料；環境層（C）在入口網站的容器裡檢查網路隔離、護欄、模型代理與告警。這裡顯示最近一次的報告。</p>
+    </div>
+    <div id="acc-body"><p class="muted">讀取驗收報告中…</p></div>
+    <div class="howto">
+      <h3>重新驗收</h3>
+      <p>在 WSL（Ubuntu）的安裝資料夾執行第一行；在 Windows 主機上，用系統管理員 PowerShell 在套件資料夾執行第二行。模型沒有在線時去掉 <code class="nw">--with-model</code>／<code class="nw">-WithModel</code>。驗收會跑一次網路隔離檢查；加上 <code class="nw">--with-model</code> 時，兩個 Agent 還會各回答一題正常問題，首頁說明列的作答次數會各加一。</p>
+      <pre><code>./lab.sh verify --with-model
+.\verify-windows.ps1 -Stage Post -WithModel</code></pre>
+    </div>
+  </section>
 </main>
+
+<!-- 展示提詞列：按「開始展示」才出現 -->
+<div class="presenter" id="presenter" role="region" aria-label="展示提詞列" hidden>
+  <div class="pr-text">
+    <p class="pr-step"><span id="pr-count"></span><b id="pr-title"></b></p>
+    <p class="pr-say" id="pr-say" aria-live="polite"></p>
+    <p class="pr-look" id="pr-look"></p>
+  </div>
+  <div class="pr-actions">
+    <button type="button" id="pr-prev">上一步</button>
+    <button type="button" class="primary" id="pr-act">前往</button>
+    <button type="button" id="pr-next">下一步</button>
+    <button type="button" id="pr-end">結束展示</button>
+  </div>
+</div>
 
 <footer class="footer">
   <p>本環境的人名、帳號與密碼全部虛構；以 <code>CANARY-</code>、<code>FLAG{</code> 開頭的字串是誘餌，用來判定是否外洩。受害主機、攻擊者收集站與威脅情資為模擬服務；身分驗證目前由治理閘道內建的身分登錄擔任，可替換為獨立的 IdP。護欄以規則（可加本地防護模型）判斷，不是安全邊界。系統帶的是示範帳密，只能在隔離的實驗網路使用。</p>

@@ -360,3 +360,187 @@ main > section { max-width: 1200px; margin: 0 auto; padding: 72px clamp(16px, 4v
 .switch-label span { margin-left: 4px; font-weight: 700; color: var(--ink); }
 #lane-guard.off { color: var(--amber-ink); font-weight: 700; }
 .answer .redacted { background: var(--held-wash, rgba(15,138,126,.12)); color: var(--held); border-radius: 4px; padding: 0 3px; }
+
+/* ================================================================ 展示導覽、實驗結果、環境驗收、提詞列 */
+.btn { font: inherit; font-size: .88rem; font-weight: 600; padding: 6px 14px; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); white-space: nowrap; }
+.btn:hover { border-color: var(--ink-3); }
+.btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.linkish { font: inherit; font-size: .85rem; background: none; border: 0; padding: 0; color: var(--bar); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; white-space: nowrap; }
+.proof-foot { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 18px; }
+.proof-foot .proof-note { flex: 1 1 32em; }
+.notice { margin: 0 0 14px; padding: 12px 16px; border-left: 4px solid var(--amber); background: var(--amber-wash); border-radius: 0 8px 8px 0; font-size: .93rem; }
+.notice.bad { border-left-color: var(--breach); background: var(--breach-wash); }
+.tags { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 2px; }
+.tag { display: inline-block; font-size: .74rem; line-height: 1.6; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink-2); white-space: nowrap; }
+.res-table .tag { margin-left: 6px; vertical-align: 1px; }
+.table-scroll { overflow-x: auto; }
+
+/* 提示目前講到哪一區（使用者按了才出現；減少動態時不播放） */
+.spot { animation: spot 1.8s ease-out; }
+@keyframes spot { 0%, 35% { box-shadow: inset 4px 0 0 var(--amber); background-color: var(--amber-wash); } 100% { box-shadow: inset 4px 0 0 transparent; background-color: transparent; } }
+
+/* ---------------------------------------------------------------- 展示導覽 */
+.guide-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 24px; align-items: start; }
+.ready, .script { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+.ready h3, .script h3 { margin: 0; font-size: 1.05rem; }
+.ready-verdict { margin: 12px 0 10px; padding: 12px 16px; border-left: 4px solid var(--ink-3); background: var(--surface-2); border-radius: 0 8px 8px 0; font-weight: 800; font-size: 1.15rem; line-height: 1.45; }
+.ready-verdict.ok { border-left-color: var(--held); background: var(--held-wash); color: var(--held); }
+.ready-verdict.warn { border-left-color: var(--amber); background: var(--amber-wash); color: var(--amber-ink); }
+.ready-verdict.bad { border-left-color: var(--breach); background: var(--breach-wash); color: var(--breach); }
+.ready-list { list-style: none; margin: 0; padding: 0; }
+.ready-list li { display: grid; grid-template-columns: 1.3em minmax(0, 1fr); gap: 2px 8px; padding: 8px 0; border-top: 1px solid var(--line); font-size: .92rem; }
+.ready-list .ic { font-weight: 800; text-align: center; color: var(--ink-3); }
+.ready-list li.ok .ic { color: var(--held); }
+.ready-list li.warn .ic { color: var(--amber-ink); }
+.ready-list li.bad .ic, .ready-list li.bad > span:nth-child(2) { color: var(--breach); }
+.ready-list .fix { grid-column: 2; font-size: .84rem; color: var(--ink-3); }
+
+.script-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.script-steps { list-style: none; margin: 0; padding: 0; counter-reset: sstep; }
+.script-steps li { counter-increment: sstep; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 10px 0; border-top: 1px solid var(--line); }
+.script-steps li::before { content: counter(sstep); width: 26px; height: 26px; margin-top: 1px; border-radius: 50%; background: var(--surface-2); color: var(--ink); font-weight: 700; font-size: .85rem; display: grid; place-items: center; }
+.script-steps li.current::before { background: var(--amber); color: #1A1300; }
+.script-steps li.current b { color: var(--ink); }
+.script-steps b { display: block; font-size: .97rem; }
+.script-steps p { margin: 2px 0 0; font-size: .86rem; color: var(--ink-2); }
+.script-steps .opt { margin-left: 8px; font-size: .72rem; font-weight: 400; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink-3); vertical-align: 1px; }
+
+.where-title { margin: 36px 0 10px; font-size: 1.2rem; }
+.where { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; font-size: .9rem; }
+.where th, .where td { text-align: left; vertical-align: top; padding: 10px 14px; border-top: 1px solid var(--line); }
+.where thead th { border-top: 0; font-size: .8rem; font-weight: 600; color: var(--ink-3); background: var(--surface-2); }
+.where thead th:first-child { border-top-left-radius: 14px; }
+.where thead th:last-child { border-top-right-radius: 14px; }
+.where tbody th { font-weight: 700; width: 24%; }
+.where .proves { color: var(--ink-2); white-space: nowrap; }
+.where td a { color: var(--bar); text-underline-offset: 3px; }
+.where .now { color: var(--ink-2); width: 30%; }
+.where .now.bad { color: var(--breach); }
+.ic { display: inline-block; width: 1.1em; font-weight: 800; }
+.ic.ok { color: var(--held); }
+.ic.warn { color: var(--amber-ink); }
+.ic.bad { color: var(--breach); }
+
+/* ---------------------------------------------------------------- 實驗結果 */
+.results-bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; margin-bottom: 14px; font-size: .88rem; }
+.results-bar select { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.res-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 3px solid var(--ink); }
+.res-summary > div { padding: 16px 20px 16px 0; }
+.res-summary > div + div { padding-left: 20px; border-left: 1px solid var(--line); }
+.res-summary h3 { margin: 0; font-size: 1rem; color: var(--ink-2); }
+.res-summary .big { margin: 2px 0; font-size: clamp(2rem, 3.4vw, 2.6rem); font-weight: 800; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.res-summary .big.bad { color: var(--breach); }
+.res-summary .big.ok { color: var(--held); }
+.res-summary .big.none { color: var(--ink-3); }
+.res-summary p { margin: 0; font-size: .85rem; color: var(--ink-2); }
+.res-notes { margin: 4px 0 16px; padding-left: 1.2em; font-size: .84rem; color: var(--ink-3); }
+.res-table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; font-size: .9rem; }
+.res-table th, .res-table td { padding: 9px 14px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; }
+.res-table thead th { border-top: 0; font-size: .82rem; font-weight: 600; color: var(--ink-3); }
+.res-table tbody th { font-weight: 600; }
+.res-table tbody th .id, .exp-group li .id { font-family: var(--mono); font-size: .8rem; color: var(--ink-3); margin-right: 8px; }
+.res-table tr.grp th { background: var(--surface-2); font-size: .84rem; color: var(--ink-2); padding: 6px 14px; }
+.cell { width: 19%; font-variant-numeric: tabular-nums; }
+.cell b { font-size: 1.02rem; }
+.cell .r { display: block; font-size: .78rem; color: var(--ink-3); }
+.cell.ok b { color: var(--held); }
+.cell.bad b { color: var(--breach); }
+.cell.warn b { color: var(--amber-ink); }
+.cell.none, .cell.na { color: var(--ink-3); font-size: .85rem; }
+.cell .err { display: block; font-size: .78rem; color: var(--amber-ink); }
+.res-files { margin-top: 14px; font-size: .86rem; }
+.res-files summary, .acc-history summary { cursor: pointer; color: var(--ink-2); }
+.res-files table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: .84rem; }
+.res-files th, .res-files td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.res-files th { color: var(--ink-3); font-weight: 600; }
+.howto { margin-top: 22px; padding: 14px 18px; border: 1px dashed var(--line); border-radius: 10px; font-size: .9rem; color: var(--ink-2); }
+.howto h3 { margin: 0 0 4px; font-size: .98rem; color: var(--ink); }
+.howto p { margin: 0 0 8px; }
+.howto pre { margin: 0 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); overflow-x: auto; }
+.howto pre code { background: none; padding: 0; font-size: .82rem; white-space: pre; }
+.howto p code { overflow-wrap: anywhere; }
+.howto p code.nw { white-space: nowrap; }
+
+/* ---------------------------------------------------------------- 環境驗收 */
+.acc-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 20px; margin-bottom: 14px; }
+.acc-head p { margin: 0; }
+.acc-overall { display: inline-flex; align-items: baseline; gap: 8px; font-size: clamp(1.6rem, 3vw, 2.1rem); font-weight: 800; }
+.acc-overall.ok { color: var(--held); }
+.acc-overall.bad { color: var(--breach); }
+.acc-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; }
+.acc-group { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px 8px; }
+.acc-group h3 { margin: 0 0 8px; font-size: 1.05rem; }
+.acc-group h3 small { display: block; font-weight: 400; font-size: .82rem; color: var(--ink-3); }
+.acc-list { list-style: none; margin: 0; padding: 0; }
+.acc-list li { display: grid; grid-template-columns: 3em minmax(0, 1fr) auto; gap: 0 10px; padding: 8px 0; border-top: 1px solid var(--line); font-size: .9rem; }
+.acc-list .id { font-family: var(--mono); font-size: .8rem; color: var(--ink-3); padding-top: 2px; }
+.acc-list .res { display: inline-flex; gap: 4px; font-weight: 700; white-space: nowrap; }
+.acc-list li.pass .res { color: var(--held); }
+.acc-list li.fail .res, .acc-list li.fail .d { color: var(--breach); }
+.acc-list li.skip .res { color: var(--ink-3); }
+.acc-list details { grid-column: 2 / -1; font-size: .8rem; color: var(--ink-3); }
+.acc-list summary { cursor: pointer; width: fit-content; }
+.acc-list pre { margin: 4px 0 2px; padding: 6px 8px; max-height: 180px; overflow: auto; border-radius: 6px; background: var(--paper); font-family: var(--mono); font-size: .76rem; white-space: pre-wrap; word-break: break-word; color: var(--ink-2); }
+.req { margin-left: 6px; font-size: .72rem; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink-3); vertical-align: 1px; white-space: nowrap; }
+.acc-history { margin-top: 16px; font-size: .86rem; }
+.acc-history ul { list-style: none; margin: 8px 0 0; padding: 0; }
+.acc-history li { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.acc-history .ok { color: var(--held); font-weight: 700; }
+.acc-history .bad { color: var(--breach); font-weight: 700; }
+
+/* ---------------------------------------------------------------- 監控：偵測分類可點到 Wazuh */
+.bars li a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.bars li a:hover { text-decoration-color: var(--ink-3); }
+.monitoring .section-head a { color: var(--bar); text-underline-offset: 3px; }
+.monitoring .section-head p + p { margin-top: 6px; }
+
+/* ---------------------------------------------------------------- 展示提詞列 */
+.presenter { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 30; width: min(1000px, calc(100% - 32px)); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 20px; align-items: center; padding: 14px 18px; border-radius: 14px; background: var(--ink); color: var(--paper); box-shadow: 0 10px 30px rgba(18, 33, 59, .28); }
+.presenter[hidden] { display: none; }
+.pr-text p { margin: 0; }
+.pr-step { font-size: .85rem; color: color-mix(in srgb, var(--paper) 72%, transparent); }
+.pr-step b { margin-left: 10px; font-size: 1.05rem; color: var(--paper); }
+.pr-say { margin-top: 4px !important; font-size: 1rem; line-height: 1.6; }
+.pr-look { margin-top: 4px !important; font-size: .88rem; color: color-mix(in srgb, var(--paper) 76%, transparent); }
+.pr-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.pr-actions button { font: inherit; font-size: .86rem; padding: 6px 12px; border-radius: 8px; cursor: pointer; border: 1px solid color-mix(in srgb, var(--paper) 35%, transparent); background: transparent; color: var(--paper); white-space: nowrap; }
+.pr-actions button:hover { border-color: var(--paper); }
+.pr-actions button.primary { order: -1; grid-column: 1 / -1; background: var(--amber); border-color: var(--amber); color: #1A1300; font-weight: 700; }
+#pr-end { grid-column: 1 / -1; border-color: transparent; color: color-mix(in srgb, var(--paper) 72%, transparent); }
+.pr-actions button:disabled { opacity: .4; cursor: not-allowed; }
+.pr-actions button:focus-visible { outline-color: var(--amber); }
+body.presenting { padding-bottom: 230px; }
+
+@media (max-width: 1080px) {
+  .guide-grid, .acc-groups { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .res-summary { grid-template-columns: 1fr; }
+  .res-summary > div, .res-summary > div + div { padding: 14px 0; border-left: 0; }
+  .res-summary > div + div { border-top: 1px solid var(--line); }
+  /* 窄螢幕：表格改成一列一張，欄名寫在值前面 */
+  .where thead, .res-table thead { display: none; }
+  .where, .where tbody, .where tr, .where th, .where td,
+  .res-table, .res-table tbody, .res-table tr, .res-table th, .res-table td { display: block; width: auto; }
+  .where tr, .res-table tr { border-top: 1px solid var(--line); padding: 8px 0; }
+  .where tbody tr:first-child, .res-table tbody tr:first-child { border-top: 0; }
+  .where th, .where td, .res-table th, .res-table td { border-top: 0; padding: 2px 14px; }
+  .where td[data-label]::before, .res-table td[data-label]::before { content: attr(data-label) "："; color: var(--ink-3); font-weight: 400; }
+  .where .proves { white-space: normal; }
+  .where tbody th, .where td.now { width: auto; }
+  .res-table tr.grp { padding: 0; }
+  .res-table tr.grp th { padding: 6px 14px; }
+  .cell b, .cell .r { display: inline; margin-right: 6px; }
+  .cell .err { display: block; }
+  .acc-list li { grid-template-columns: 2.6em minmax(0, 1fr); }
+  .acc-list .res { grid-column: 2; }
+  .presenter { grid-template-columns: 1fr; bottom: 8px; padding: 12px 14px; width: calc(100% - 16px); }
+  .pr-actions { grid-template-columns: repeat(3, 1fr); }
+  #pr-end { grid-column: auto; border-color: color-mix(in srgb, var(--paper) 35%, transparent); }
+  body.presenting { padding-bottom: 300px; }
+  .script-steps li { grid-template-columns: 28px minmax(0, 1fr); }
+  .script-steps li .btn { grid-column: 2; justify-self: start; }
+}
+.res-summary p.extra { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--line); }
+.res-summary p.extra.bad { color: var(--breach); }
