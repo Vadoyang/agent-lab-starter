@@ -264,6 +264,7 @@ services:
     volumes:
       - ./logs:/logs:ro
       - ./jobs:/jobs
+      - ./results:/results:ro   # 驗收報告與考卷結果（入口網站只讀、只回傳整理過的欄位）
     networks: [svc_net, ui_net]
     depends_on: [toolproxy, soar, guard, llm-proxy]
     restart: unless-stopped

@@ -103,7 +103,7 @@ cd agent-lab-starter
 
 | 元件 | 說明 | 對外網頁 |
 |---|---|---|
-| **入口網站**（DEMO 首頁） | 環境說明、互動架構圖、元件與設計理念、實驗操作台（同一題同時問兩個 Agent）、即時事件流、內嵌戰情室 | `http://<IP>:8080` |
+| **入口網站**（DEMO 首頁） | 展示導覽（展示前檢查、建議順序與提詞列、每一項驗證在哪裡看）、環境說明、互動架構圖、元件與設計理念、實驗操作台（同一題同時問兩個 Agent）、考卷題目、實驗結果（三種條件的攻擊成功率）、環境驗收報告、即時事件流、內嵌戰情室 | `http://<IP>:8080` |
 | **Wazuh**（manager／indexer／dashboard 4.14.10） | 讀治理事件、用自訂規則偵測、存告警 | `https://<IP>:8443` |
 | **Grafana 戰情室** | 讀 `wazuh-alerts-*`，七面板即時大螢幕 | `http://<IP>:3000` |
 | **治理閘道 toolproxy**（Agent Gateway／PEP） | 驗憑證、查政策、代為執行、呼叫兩側護欄、全程紀錄；可被 SOAR 動態撤銷 token | 內部 |
@@ -142,11 +142,11 @@ cd agent-lab-starter
 ```bash
 docker compose run --rm agent-baseline python agent.py "公司目前共有幾位員工？"   # 未治理
 docker compose run --rm agent-governed python agent.py "公司目前共有幾位員工？"   # 受治理
-docker compose run --rm agent-governed python run_tests.py --repeat 5              # 整份考卷（4 正常 + 6 攻擊）
+docker compose run --rm agent-governed python run_tests.py --repeat 5              # 整份考卷（4 正常 + 11 攻擊；第三章 5 題只考受治理組）
 docker compose run --rm agent-governed python run_tests.py --checks                # 網路隔離檢查
 ```
 
-結果存在 `results/`（CSV＋彙總表，含 95% 信賴區間）；在戰情室 `:3000` 或 Wazuh dashboard `:8443`（Discover 搜 `rule.groups:agentlab`）看告警。
+結果存在 `results/`（CSV＋彙總表，含 95% 信賴區間），入口網站的「實驗結果」區會直接讀取，排成三種條件的對照表；佈署驗收報告也會出現在「環境驗收」區。在戰情室 `:3000` 或 Wazuh dashboard `:8443`（Discover 搜 `rule.groups:agentlab`）看告警。
 
 ---
 
